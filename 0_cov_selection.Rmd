@@ -1,0 +1,372 @@
+---
+title: "Covariate Selection for the ACT TRAP Mobile Monitoring Campaign"
+output: html_document
+---
+Summary 
+
+* drop irrelevant covariates from the mobile monitoring data 
+	* old population density estimates. using 2010 estimates only. 
+	+ dropped 'LU' data and kept RLU, since LU covariates are from older aerial photography data from 1970-1980, while RLU covariates are from more current, 2006 satellite data 
+
+
+* transform and generate new variables for the monitoring and all other relevant data (agency sites, cohort sites), .  
+	+ log transformed proximities variables  
+	  -	TRAP tends to exponentially decays with increasing distance from the source    
+  + created some new proximity variables (e.g. distance to a123)
+  + calculate mean columnar NO2 (no_behr) for the years 2005-2007
+
+
+* prepare for validation by splitting the monitoring data into a training and test set.   
+
+* with the monitoring training data, conduct some initial variable selection to help improve the PLS model fit later:     
+  + common.value: excluded variables which have less than 40% [old approach: 20%] of being different from the most common value in monitoring data
+	  - eliminates variables with little variability that are not likely to improve (or even worsen) the model fit   
+	+ low.landuse:  excluded varilabies with maximum land use variables less than 20 [old approach: 10] in monitoring data
+	  - this land use is a small fraction and likely to not have a significant impact relative to everything else in within a buffer    
+	+ outlier: excluded variables with outliers more than 2% in monitoring data [NOT doing: and cohort data combined]
+	  -	variables may worsen model fit  
+  + dropped variables with zero variability within a given route
+
+	
+
+
+
+* not doing here
+	+ sd.ratio: excluded variables with SD of cohort data greater than 5 times of SD of monitoring data
+	  -	drops variables whose distribution is very different in the ACT cohort than the monitoring region in an effort to reduce model extrapolation later on   
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = F, 
+                      cache=F, cache.comments = F, 
+                      message = F, warning = F, 
+                      tidy.opts=list(width.cutoff=60), tidy=TRUE,
+                      fig.height = 8, fig.width = 8
+                      )  
+
+# Clear workspace of all objects and unload all extra (non-base) packages
+rm(list = ls(all = TRUE))
+if (!is.null(sessionInfo()$otherPkgs)) {
+  res <- suppressWarnings(
+    lapply(paste('package:', names(sessionInfo()$otherPkgs), sep=""),
+      detach, character.only=TRUE, unload=TRUE, force=TRUE))
+}
+
+pacman::p_load(tidyverse,
+               kableExtra,
+               sf
+               )  
+
+set.seed(1)
+
+```
+
+```{r}
+#route info
+routes <- readRDS(file.path("..", "..", "2. Prediction Models", "prediction_models_R", "Output", "stops_with_time_vars.rda")) %>%
+  mutate(route = as.integer(substr(runname, nchar(runname), nchar(runname)))) %>%
+  distinct(route, location)
+
+
+# import route data, monitoring data & drop irrelevant covariates 
+mm0 <- routes %>%
+  left_join(read.csv(
+    file.path("..", "..", "1. Our Campaign", "Our Campaign R", "Data", "Original", "Geocovariates", "dr0311_mobile_covars.csv"
+      #"~", "OneDrive - UW", "Documents","School","PhD", "Dissertation", "TRAP R Project", "Data", "Aim 2", "Geocovariates", "201002", "dr0311_mobile_covars.csv"
+      )), by = c("location" = "native_id")) %>%
+  # drop empty covariates  
+  select_if(~!all(is.na(.))) %>%
+  #drop Roosevelt garage & stop w/ 1 obeservation that was replaced by MS0601
+  filter(!location %in% c("MS0000", "MS0398")) %>%
+  #rearrange columns
+  select(location, route, longitude, latitude, contains("lambert"), everything(), 
+         # drop older covariates
+         -contains(c("pop90_", "pop_")), -starts_with("lu_"),
+         #don't need these
+         -c(starts_with(c("location_", "block", "tract", "msa", "region"))))  
+
+# save location lat/long
+saveRDS(select(mm0, route, location, latitude, longitude#, lambert_x, lambert_y
+               ), file.path("Output", "location_lat_long.rda"))
+
+```
+
+* transform and generate new variables for the monitoring and all other relevant data (agency sites, cohort sites), .  
+	+ log transformed proximities variables  
+	  -	TRAP tends to exponentially decays with increasing distance from the source    
+  + created some new proximity variables (e.g. distance to a123)
+
+
+```{r}
+# Fns to generate new variables for all datasets 
+
+# fn returns variable for sum of a2 and a3 roads in each buffer
+
+combine_a23_ll <- function(df) {
+  #find buffers for a2-3 length variables
+  buffers <- str_subset(names(df), "ll_a[2:3]") %>% str_extract("s[0:9].*")
+  
+  #for each buffer, calculate sum of a2+a3 length
+  for (i in seq_along(buffers)) {
+    #i=1
+    old_vars <- paste0(c("ll_a2_", "ll_a3_"), buffers[i])
+    new_var <- paste0("ll_a23_", buffers[i])
+    
+    df[new_var] <- apply(df[old_vars], 1, sum)
+  }
+  return(df)
+  }
+
+
+# fn transform and generate new variables for the monitoring and all other relevant data (agency sites, cohort sites), .  
+# 	+ log transformed proximities variables  
+#   + created some new proximity variables (e.g. distance to a123), including using combine_a23_ll() fn
+#   + calculates average no2_behr (columnar NO2 from 2005-2007)
+
+generate_new_vars <- function(df) {
+  
+  no2_behr_vars <- c("no2_behr_2005","no2_behr_2006", "no2_behr_2007")
+  
+  df <- df %>%  
+  rowwise() %>%
+  mutate(m_to_a123 = min(m_to_a1, m_to_a2, m_to_a3),
+         m_to_a23 = min(m_to_a2, m_to_a3),
+         
+         no2_behr = mean(!!as.symbol(no2_behr_vars))
+         ) %>%
+    select(-no2_behr_vars) %>%
+    ungroup() %>%
+    #make min distance 1 m before log transforming
+    mutate_at(vars(starts_with("m_to_")), ~ifelse(.==0, 1, .) %>% log(.)) %>%
+    rename_at(vars(starts_with("m_to_")), ~gsub("m_to_", "log_m_to_", .)) %>%
+    # calculate sum of a2 and a3 roads in each buffer
+    combine_a23_ll()
+}
+
+ 
+# test <- generate_new_vars(mm0)
+# test %>% select(location, contains("no2_behr")) %>% head(3)
+
+```
+
+
+
+```{r}
+mm <- generate_new_vars(mm0)
+covar_names <- select(mm, log_m_to_a1:last_col()) %>% names() 
+
+#348 initial covariates
+print(paste("there are", length(covar_names), "initial covariates"))
+
+```
+
+
+
+* randomly split the monitoring data into a training and a test set.   
+
+```{r}
+seed_n <- 1111#1989
+set.seed(seed_n)
+
+mm_train0 <- slice_sample(mm, prop = 0.9)
+mm_test <- anti_join(mm, mm_train0, messages="silent")
+
+saveRDS(mm_test, file.path("Output", "mm_cov_test_set.rda"))
+
+```
+
+```{r, eval=T}
+# plot test sites
+project_crs <- 4326  #lat/long
+#m_crs <- 32148
+
+monitoring_region <- readRDS(file.path("..", "..", "1. Our Campaign", "Our Campaign R", "Data", "Output", "GIS", 
+                                       #"monitoring_area_shp.rda"
+                                       "monitoring_land_shp.rda"
+                                       )) #%>% st_transform(m_crs)
+
+ggplot() +
+  geom_sf(data=monitoring_region) +
+  geom_sf(data = st_as_sf(mm_train0, coords = c("longitude", "latitude"), crs =  project_crs), aes(col="train")) +
+  geom_sf(data=st_as_sf(mm_test, coords = c("longitude", "latitude"), crs =  project_crs), aes(col="test")) +
+  labs(title = "Training and test sites",
+       subtitle = paste0("set.seed(", seed_n, ")"),
+       col = "sites"
+       )
+
+```
+
+
+
+* with the training data, conduct variable selection to help improve the PLS model fit later:     
+  + common.value: excluded variables which have less than 40% of being different from the most common value in monitoring data
+	  - eliminates variables with little variability that are not likely to improve (or even worsen) the model fit   
+	+ low.landuse:  excluded varilabies with maximum land use variables less than 20% in monitoring data
+	  - this land use is a small fraction and likely to not have a significant impact relative to everything else in within a buffer    
+	+ outlier: excluded variables with outliers more than 2% in monitoring data [NOT doing: and cohort data combined]
+	  -	variables may worsen model fit   
+	
+```{r}
+# functions 
+
+# mon.data = mm_train0
+# vars.all = covar_names
+# x = mon.data$log_m_to_a1
+
+fail_most_common_value <- function(mon.data, vars.all, common_value_thres = 0.4#0.2
+                                   ) {
+  
+  fail <- apply(mon.data[,vars.all], 2, function(x) {
+    y <- table(x) 
+    mode_val <- as.numeric(names(y)[y==max(y)])
+    sum(x != mode_val)/length(x) < common_value_thres
+    }
+    ) %>%
+    as.data.frame() %>%
+    filter(.==TRUE) %>%
+    rownames()
+  
+  return(fail)
+  }
+
+
+fail_low_landuse <- function(mon.data, vars.all, lowValue=20 #10
+                             ) 
+{
+  lu.vars <- grep("^rlu_|^lu", vars.all, value=T)
+  fail <- sapply(lu.vars, function(x) return (max(mon.data[, x]) < lowValue))
+  fail <- names(fail)[grep("TRUE", fail)]
+  return (fail)
+}
+
+
+# # [ probably dont need this since monitoring stops are similar to the cohort ]
+# fail_sd_ratio <- function(mon.data, cohort.data, vars.all, thres=5) 
+# {
+#   fail <- c()
+#   for (i in vars.all)  {
+#     #i=vars.all[1]
+#     mon.sd <- sd(mon.data[, i], na.rm=TRUE)
+#     cohort.sd <- sd(cohort.data[, i], na.rm=TRUE)
+#         if (cohort.sd > thres * mon.sd | all(is.na(mon.sd))) 
+#       # [ vector of variables where cohort sites are more variable than monitoring sites ]
+#       fail <- c(fail, i)
+#     
+#   }
+#   return (fail)
+# }
+
+fail_outlier_check <- function(mon.data, #cohort.data, 
+                               vars.all, outlier_thres=0.02) 
+{
+  all.data = rbind(mon.data[,vars.all]#, cohort.data[,vars.all]
+                   )
+  
+  fail <- sapply( vars.all, function(x) 
+    return (  sum(abs(scale(all.data[, x]))> 5) > nrow(all.data)*outlier_thres  ) )
+  fail <- names(fail)[grep("TRUE", fail)]
+  return (fail)
+}
+
+
+```
+
+```{r}
+# mon.data = mm_train0
+# vars.all = covar_names
+# 
+# #new variables dropped
+# drop_vars[!drop_vars %in% drop_variables]
+
+# variables that still have too little variability by route 
+# returns variables with no variability in any single route (for simulations later)
+low_sd_by_route <- function(mon.data, vars.all) {
+  
+  drop_vars <- mon.data %>%
+  group_by(route) %>%
+  summarize_at(vars(vars.all), ~sd(.)) %>%
+  #gather(cov, sd, vars.all) %>%
+  pivot_longer(vars.all, names_to = "cov", values_to = "sd") %>%
+    
+  # covariates with no variation
+  filter(sd == 0) %>% 
+  distinct(cov) %>% pull()
+  
+  return(drop_vars)
+  
+}
+
+
+```
+
+
+```{r}
+# combine all fns above
+drop_variables_fn <- function(monitoring_data, covar_names) {
+  result <- list(
+    fail_most_common_value_vars = fail_most_common_value(mon.data = monitoring_data, vars.all = covar_names),
+    fail_low_landuse = fail_low_landuse(mon.data = monitoring_data, vars.all = covar_names),
+    fail_outlier_check = fail_outlier_check(mon.data = monitoring_data, vars.all = covar_names),
+    
+    low_sd_by_route = low_sd_by_route(mon.data = monitoring_data, vars.all = covar_names)
+    )
+  
+  return(result)
+  
+}
+
+```
+
+ 
+```{r}
+# variables dropped are the same when restrict to routes 1-3
+drop_variables <- drop_variables_fn(monitoring_data = mm_train0, covar_names = covar_names)
+
+drop_variables %>%
+  kable(caption = "variables droped becausae of: low variability, low and use, outliers, and zero variability (SD) within any given route, respectively") %>%
+  kable_styling()
+
+# for HEI modeling, which is more restrictive
+drop_variables <- unlist(drop_variables, use.names = F) %>% unique()
+print(paste0(length(drop_variables), " variables were dropped for HEI simulations"))
+
+#for most other modeling
+drop_variables_fewer <- unlist(drop_variables[-4], use.names = F) %>% unique()
+print(paste0(length(drop_variables_fewer), " variables were dropped for all other prediction modeling"))
+
+# diff # em_CO_s03000 # ????
+# setdiff(drop_variables, drop_variables_fewer)
+ 
+
+#variables to use for HEI modeling
+keep_variables <- setdiff(covar_names, drop_variables)
+print(paste("There are",length(keep_variables), "variables left for HEI modeling"))
+
+keep_variables %>%
+  paste(collapse = ", ") %>%
+  kable() %>%
+  kable_styling()
+
+#variables to use for all other modeling
+print(paste("There are",length(setdiff(covar_names, drop_variables_fewer)), "variables left for all other modeling"))
+
+
+
+```
+
+
+
+```{r}
+#save final training data
+## for HEI simulations, which also restrict to low variability by route
+select(mm_train0, -drop_variables) %>%
+  saveRDS(., file.path("Output", "mm_cov_train_set_hei.rda"))
+
+## for all other models
+select(mm_train0, -drop_variables_fewer) %>%
+  saveRDS(., file.path("Output", "mm_cov_train_set.rda"))
+
+```
+
+
+ 

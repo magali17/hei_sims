@@ -1,0 +1,1162 @@
+---
+title: "CA Fixed Site Simulations"
+author: "Magali Blanco"
+date: ' `r Sys.time()` '
+output:
+  html_document:
+    df_print: paged
+    toc: yes
+    toc_depth: '3'
+    number_sections: true
+    toc_float: true
+    collapsed: false
+    smooth_scroll: false
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = F, 
+                      cache=F, cache.comments = F, 
+                      message = F, warning = F, 
+                      tidy.opts=list(width.cutoff=60), tidy=TRUE,
+                      fig.height = 6, fig.width = 10
+                      )  
+
+# Clear workspace of all objects and unload all extra (non-base) packages
+rm(list = ls(all = TRUE))
+if (!is.null(sessionInfo()$otherPkgs)) {
+  res <- suppressWarnings(
+    lapply(paste('package:', names(sessionInfo()$otherPkgs), sep=""),
+      detach, character.only=TRUE, unload=TRUE, force=TRUE))
+}
+
+pacman::p_load(
+               kableExtra,
+               #caret, #need?
+               #attach these last to use these functions as the defaults?
+               lubridate,
+               tidyverse, 
+               ggpubr, #ggarrange(), annotate_figure()
+               pls,
+               glmnet, #lasso
+               modelr, #map() for many models
+               imager #load.image()
+               )  
+
+# ggplot settings
+theme_set(theme_bw())
+theme_update(legend.position = "bottom")
+
+##boxplot outlier
+outlier_size <- 0.7
+outlier_alpha <- 0.4
+
+source("0_functions.R")
+
+#images_path <- file.path("..", "Manuscript", "Images")
+
+set.seed(1)
+
+```
+
+# Purpose 
+
+The main question of interest for this analysis is: **How little can we sample hourly NOx observations while still achieving "good" annual averages?**
+
+This script runs simulations with fixed site regulatory data from CA sites to show how the temporality of the sampling design (e.g., duration, frequency) impacts model predictions. Simulations are similar to the balanced design described in our mobuile monitoring design simulation, but with less sampling in terms of:
+
+* sampling duration (e.g., 8, 12, 16 weeks/yr instead of year around)   
+* fewer visits/site  
+
+# Data sources
+
+* NOx [CA regulatory data](https://aqs.epa.gov/aqsweb/airdata/download_files.html) for 2016   
+* geocovariates (MESA Air geodatabase)   
+
+* The code for this work can be found on [GitHub](https://github.com/magali17/act_hei_aim1a). It is based off of our [mobile monitoring design simulation](https://github.com/kaufman-lab/mm_trap_design) study.
+
+
+### -> need this requirement? "sites were required to have sampled for at least 40% of the time during various two-week periods that were used in two of our “common” designs (described below). This sample size ensured that we could sample during these periods without replacement."
+
+```{r}
+dt_path <- file.path("~", "Documents", "School", "PhD", "Dissertation", "Mobile Monitoring", "MM Design R Project", "Output")
+
+#hourly nox for 2016
+nox <- readRDS(file = file.path(dt_path, "nox_hourly.rda")) %>%
+  filter(grepl("NOx", Parameter.Name) )
+
+#aqs site geocovariates
+covars <- readRDS(file = file.path(dt_path, "site_covariates.rda")) %>%
+  sf::st_drop_geometry()
+
+
+```
+
+
+
+
+Variables for short-term mobile montiroing sampling simulations
+
+```{r, echo=T}
+
+k_folds <- 10 
+# no. simulations
+campaign_sim <- 30
+
+# samples per site
+site_samples_n <- c(28, 12, 8
+                    )
+
+# total campaign week duration
+campaign_duration <- c(8, 16, 32
+                       )
+
+# sampling hours 
+sampling_hrs <- list(
+  all = c(0:24),
+    # was 'balanced_hrs_v2',
+  most = c(0, 5:23), 
+    #was 'balanced_hrs_v3'
+  some = c(7:9, 14:17, 20:22) 
+)
+
+```
+
+# Data Summary
+
+Map of AQS site locations and annual avg NOx concentrations (from previous design work)
+
+```{r}
+# only works if file is within project directory??: knitr::include_graphics() 
+
+#![](Images/f1.map.jpg)
+
+#pacman::p_load(jpeg) # may need this to adjust image details?    
+knitr::include_graphics(path = file.path("Images", "f1.map.jpg"))  
+
+```
+
+```{r}
+nox %>%
+  summarize(
+    Sites = length(unique(native_id)),
+    N_hourly_observations = n(),
+    N_mean_days_equivalent_per_site = round(N_hourly_observations/Sites/24),
+    
+    Min = min(Sample.Measurement),
+    Q25 = quantile(Sample.Measurement, 0.25),
+    Q50 = quantile(Sample.Measurement, 0.50),
+    Q75 = quantile(Sample.Measurement, 0.75),
+    
+    Max = max(Sample.Measurement),
+  ) %>%
+  kable(caption = "Starting data of hourly NOx (ppb) concentrations") %>%
+  kable_styling()
+
+```
+
+
+# Simulations
+
+### --> Elizabeth: try 1 week season durations? 
+
+
+* Simulations with reduced sampling duration     
+  * (e.g., 8, 12, 16 weeks/yr instead of year around)     
+* Simulations with fewer visits per site    
+
+## sampling scheme
+
+```{r}
+# samples per site
+## site_samples_n #28, 12
+# campaign duration
+## campaign_duration # 8, 16
+
+# possible sites per route
+sites_per_route <- 30
+
+sampling_scheme <- data.frame(
+  samples_per_site = rep(site_samples_n, each=length(campaign_duration)),
+  campaign_duration_tot_wks = rep(campaign_duration, length(site_samples_n)),
+  sampling_seasons_n = rep(4, length(site_samples_n)*length(campaign_duration))
+  ) %>%
+  mutate(
+    campaign_duration_per_season_wks = campaign_duration_tot_wks/sampling_seasons_n,
+    site_samples_per_season = samples_per_site/sampling_seasons_n,
+    site_sampling_freq_dy = campaign_duration_per_season_wks*7/site_samples_per_season,
+    possible_sampling_sites = sites_per_route*site_sampling_freq_dy
+  )
+
+sampling_scheme %>%
+  kable(caption = "sampling scheme", digits = 1,
+        #col.names = ("")
+        
+        ) %>%
+  kable_styling() %>%
+  add_footnote(
+    c("site sampling frequency is synonymous with number of routes if only one vehicle is used",
+      "possible sampling sites is estimated asssuming 30 sites/route (~4-6 drive hours/day)"
+      )
+  )
+
+```
+
+season start and end times
+
+```{r}
+season_dates <-nox %>%
+  #filter(date(Date) >= "2016-03-19" ) %>%
+  group_by(season) %>%
+  summarize(
+    season_start = min(date(Date)),
+    #season_end = max(date(Date)),
+    ) %>%
+  mutate(
+    #start sampling first full month
+    v1_start_sampling = if_else(!grepl("winter", season),
+                               ceiling_date(ymd(season_start), unit = "month"),
+                               season_start
+                               ),
+                                #wks * dys/wk - 1 = dys
+    v1_2wk = v1_start_sampling + 2*7-1,
+    v1_4wk = v1_start_sampling + 4*7-1,
+    v1_8wk = v1_start_sampling + 8*7-1,
+    
+    v2_start_sampling = ceiling_date(ymd(v1_start_sampling), unit = "month"),
+    v2_2wk = v2_start_sampling + 2*7-1,
+    v2_4wk = v2_start_sampling + 4*7-1,
+    v2_8wk = v2_start_sampling + 8*7-1,
+  )  
+  
+season_dates %>%
+  kable(caption = "sampling period start and end dates. Periods start during the first full month after the start of the season (~10 days later) so that the winter start date is in January.") %>%
+  kable_styling()
+
+```
+
+
+```{r}
+
+#create list of sampling times for each sampling extent
+
+# --> update this if want to use other end dates
+vars_v1 <- paste0("v1_", campaign_duration/4, "wk")
+
+vars_v2 <- gsub("v1", "v2", vars_v1)
+
+
+sampling_dates_list <- list() 
+
+for(i in seq_along(vars_v1)) {
+  #i=1
+  sampling_dates_list[[i]] <- season_dates %>%
+    #for each season, calculate a start/end sampling date
+    group_by(season) %>% nest() %>% #View()
+    map(.x = .$data, 
+        .f = ~seq(.x$v1_start_sampling, get(vars_v1[i], .x), 1)
+        ) %>%
+    #combine elements/lists (c) to form a vector
+    do.call(c, .)  
+  
+  names(sampling_dates_list)[i] <- vars_v1[i]
+  
+  }
+
+# add to v1
+for(i in seq_along(vars_v2) ) {
+  #i=1
+  sampling_dates_list[[i + length(vars_v2)]] <- season_dates %>%
+    #for each season, calculate a start/end sampling date
+    group_by(season) %>% nest() %>% #View()
+    map(.x = .$data, 
+        .f = ~ seq(.x$v2_start_sampling, get(vars_v2[i], .x), 1)
+        ) %>%
+    #combine elements/lists (c) to form a vector
+    do.call(c, .) 
+  
+   names(sampling_dates_list)[i + length(vars_v1)] <- vars_v2[i]
+
+}
+
+
+```
+
+## Collect Random Samples
+
+* take random samples 
+
+```{r}
+set.seed(1)
+
+```
+
+```{r}
+# function returns annual average estimates from season-stratified random samples. Assumes both weekday and weekend sampling.
+
+ # dt =  nox %>%
+ #  #sampling days
+ #  filter(
+ #    #sites with enough samples for shortest sampling period
+ #    native_id %in% keep_sites,
+ #    as.Date(Date) %in% sampling_dates_list[[i]],
+ #    ) 
+  
+# no_campaigns = 1
+# site_samples = site_samples_n[1] #28
+  
+sim_fn <- function(
+  dt, #data from where we want to take samples from
+  # campaign simulations: 30
+  no_campaigns = campaign_sim,  
+  #no samples per site
+  site_samples, #28
+  label = "none"
+  ) {
+  
+  #divide tot samples evenly by seasons included
+  samples_per_season <- floor(site_samples/length(unique(dt$season))) #7
+  weekday_samples <- floor(samples_per_season*5/7) #5
+  weekend_samples <- samples_per_season - weekday_samples #2
+  
+  #place to save each Campaign's site averages
+  avg <- data.frame()
+    
+  # simulate many times
+  for (i in seq_len(no_campaigns)) {
+    #i=1
+    
+    #random sample of weekday site observations
+    samples1 <- dt %>%
+      #want even sampling at each site-season
+      group_by(#Parameter.Name, 
+               native_id, season) %>%
+      filter(weekday==TRUE) %>%
+      sample_n(size=weekday_samples, replace = F)
+    
+    #random sample of weekday site observations
+    samples2 <- dt %>%
+      group_by(#Parameter.Name, 
+               native_id, season) %>%
+      filter(weekday==FALSE) %>% #summarize(n = n()) %>% View()
+      sample_n(size=weekend_samples, replace = F)
+    
+    #calculate site averages from random samples
+    avg_temp <- rbind(samples1, samples2) %>%
+      mutate(Campaign = i) %>%
+      group_by(#Parameter.Name, 
+               native_id, Campaign) %>%
+        summarize(estimated_avg = mean(Sample.Measurement)) %>%
+      ungroup()  
+    
+    avg <- rbind(avg, avg_temp)
+    
+  }
+  
+  #option to relabel estimates
+  if(label != "none") {
+     names(avg)[names(avg) == "estimated_avg"] <- label
+      }
+
+  return(avg)
+  
+}
+
+```
+
+
+* dropping sites w/o enough samples to sample w/o replacement (n~1. alternative is to keep all and sample w/ replacement)
+
+
+* estimate site annual averages from simulations that vary in terms of:    
+  * samples/site (e.g., 28, 12)   
+  * sampling duration  (e.g., 2, 4 wk/season)
+  * sampling hours  (e.g., all, most, some)    
+
+```{r}
+ 
+#sites with enough samples for all simulations. restricts to sites that meet the most restrictive sampling schemes. 
+
+### --> need to update this if use diff e.g., verions
+
+#sites for v1
+keep_sites_v1 <- nox %>%
+  filter(
+    #for shortest sampling time period
+      # --> need to change sampling_dates_list[[1]] if ever change the start date (e.g., v2_2wk)
+    as.Date(Date) %in% sampling_dates_list[[1]],
+    # for most restricted sampling hours
+    hour %in% sampling_hrs[[3]]
+    ) %>%
+  # --> ?? only keep sites w/ enough samples to not have to sample w/ replacement; have 1 site w/ only 1 observation in the fall
+  group_by(native_id, season, weekday) %>%
+  mutate(n = n()) %>% 
+  #min samples per season that a given site has
+  group_by(native_id) %>%
+  mutate(n = min(n)) %>%
+  # sites w/ enough samples for simulation w/ max samples/site requirements each season
+  filter(n >= max(site_samples_n)/4  
+         ) %>% #View()
+  distinct(native_id) %>%
+  pull()
+
+keep_sites_v2 <- nox %>%
+  filter(
+    #for shortest sampling time period
+    as.Date(Date) %in% sampling_dates_list[[ length(vars_v1)+1 ]],
+    # for most restricted sampling hours
+    hour %in% sampling_hrs[[3]]
+    ) %>%
+  group_by(native_id, season, weekday) %>%
+  mutate(n = n()) %>% 
+  #min samples per season that a given site has
+  group_by(native_id) %>%
+  mutate(n = min(n)) %>%
+  # sites w/ enough samples for simulation w/ max samples/site requirements each season
+  filter(n >= max(site_samples_n)/4) %>% 
+  distinct(native_id) %>%
+  pull()
+
+#only keep sites w/ enough samples during all time periods
+keep_sites <- intersect(keep_sites_v1, keep_sites_v2)
+
+```
+
+
+Hourly NOx (ppb) readings used in simulations 
+
+```{r}
+nox %>%
+  filter(native_id %in% keep_sites) %>%
+  #group_by(native_id) %>%
+  summarize(
+    Sites = length(unique(native_id)),
+    N_hourly_observations = n(),
+    N_mean_days_equivalent_per_site = round(N_hourly_observations/Sites/24),
+    
+    Min = min(Sample.Measurement),
+    Q25 = quantile(Sample.Measurement, 0.25),
+    Q50 = quantile(Sample.Measurement, 0.50),
+    Q75 = quantile(Sample.Measurement, 0.75),
+    
+    Max = max(Sample.Measurement),
+  ) %>%
+  kable(caption = "Hourly NOx (ppb) concentrations used in simulations") %>%
+  kable_styling()
+  
+```
+
+
+
+```{r}
+
+sim_df <- data.frame()
+
+                    # loop through different number of samples per sites (e.g., 28, 12)....
+for(j in seq_along(site_samples_n)) {
+  #j=1
+                    # loop through different sampling durations (e.g., 2 wk, 4 wk)...
+  for(i in seq_along(sampling_dates_list)) {
+    #i=4
+                    #  loop through different sampling hours (e.g., all/most/some hours)
+    for(h in seq_along(sampling_hrs)) {
+    #h=1
+      temp <- nox %>%
+      #sampling days
+      filter(
+        #sites with enough samples for shortest sampling period
+        native_id %in% keep_sites,
+        as.Date(Date) %in% sampling_dates_list[[i]], # 2wk, 4wk
+             hour %in% sampling_hrs[[h]]
+             ) %>%
+      
+      #take random samples
+      sim_fn(dt=., 
+      # campaign simulations: 30
+      no_campaigns = campaign_sim,  
+      #no samples per site
+      site_samples = site_samples_n[j], #28, 12
+      label = paste0("n", site_samples_n[j], "_", names(sampling_dates_list)[i], "_", names(sampling_hrs)[h], "_hr")
+      )
+      
+      #start a dataframe if it's the first overall iteration
+      if(j==1 & i==1 & h==1) {
+        sim_df <- temp
+        } else
+          # for all other iterations, add to it
+      sim_df <- left_join(sim_df, temp)
+    
+    } 
+
+  }
+}
+
+```
+
+
+
+
+combine with true annual average
+
+```{r}
+annual_avg <- nox %>%
+  group_by(native_id) %>%
+  summarize(true_avg = mean(Sample.Measurement)) %>%
+  left_join(sim_df) %>%
+  #drop data for sites w/o estimates (e.g., 1 site didn't have enough samples during 2wk samplign period in fall)
+  drop_na()
+
+# simulation names
+sim_names <- str_subset(names(annual_avg), "n[0-9]+")
+true_avg_name <- "true_avg"
+
+```
+
+
+# PLS
+
+```{r}
+# prep for PLS: log-transform distances, drop some covariates...
+
+covars2 <- covars %>%
+  # drop sites w/ some missing values...
+  filter(native_id %in% keep_sites) %>%
+  # only keep columns w/o any NAs
+  select_if(~all(!is.na(.))) %>% #View()
+  # log-transform distances
+  log_transform_distance(all.data = ., removeOrig = T)
+
+covar_names <- covars2 %>%
+  # keep covariates
+  select(pop_s00500:no2_behr_2007, contains("log_m_")) %>%
+  names()
+  
+drop_common_val_vars <- fail_most_common_value(mon.data = covars2, vars.all = covar_names, thres = 0.1)
+drop_low_lu_vars <- fail_low_landuse(mon.data = covars2, vars.all = covar_names)
+
+#update cov names
+covar_names <- setdiff(setdiff(covar_names, drop_common_val_vars), drop_low_lu_vars)
+
+```
+
+```{r}
+# # don't need to show these for now 
+# paste(covar_names, collapse = ", ") %>%
+#   kable(caption = paste0("covarites included in PLS (n = ", length(covar_names), ")"), 
+#         col.names = c("covariate")
+#         ) %>%
+#   kable_styling()
+
+print(paste("covariates included in PLS model:", length(covar_names)))
+print(paste("Components in PLS model:", n_comp))
+
+```
+
+
+```{r}
+# get 10FCV PLS predictions
+
+# combine annual averaeges w/ covariates
+annual_avg_cov0 <- annual_avg %>%
+  left_join(covars2[, c("native_id", covar_names)]) %>%
+  #log transform before modeling - predictions will be on log scale
+  mutate_at(c(sim_names, true_avg_name), ~log(.))
+
+# true annual avg PLS model
+annual_avg_true_p <- annual_avg_cov0 %>%
+  #drop repeat campaigns from short-term simulations
+  filter(Campaign == 1) %>%
+    cv_pls_p(dt = ., y_val = true_avg_name, x_predictors = covar_names,
+             label =  paste0("cv_p_", true_avg_name), 
+             k = k_folds 
+             )
+
+# short-term campaigns
+for (i in seq_along(sim_names)) {
+  #i=3
+  annual_avg_cov0 <- annual_avg_cov0 %>% 
+    cv_pls_p(dt = ., y_val = sim_names[i], x_predictors = covar_names,
+             label =  paste0("cv_p_", sim_names[i]),
+             k= k_folds
+    )
+  }
+
+sim_results <- left_join(annual_avg_cov0, annual_avg_true_p) %>%   
+  # exponentiate log estimates & predictions back to native scale
+  mutate_at(
+    str_subset(names(.), paste(c(sim_names, true_avg_name), collapse = "|")) ,
+    ~exp(.)
+    ) %>%  
+  
+  #drop geocovariates, only keep estimtes & predictions
+  select(native_id, Campaign,
+         str_subset(names(.), paste(c(sim_names, true_avg_name), collapse = "|"))
+         #contains("cv_p_"), everything(),
+         #drop geocovariates for now
+         #-keep_vars
+         ) %>% #View()
+  # #use estimates & predictions from 1st campaign for all long-term "campaigns"
+  group_by(#Parameter.Name, 
+           native_id) %>%
+  mutate_at(paste0("cv_p_", true_avg_name) , ~ .[Campaign == 1]) %>%
+  ungroup()
+
+#save prediction column names
+cv_p_all_names <- str_subset(names(sim_results), "cv_p")
+cv_p_sim_names <- setdiff(cv_p_all_names, "cv_p_true_avg")
+
+```
+
+
+```{r}
+# reorganize dataframes
+
+# gather all short-term predictions
+sim_results_l <- sim_results %>%
+  gather("Design", "Prediction", cv_p_sim_names) %>%  
+  #separate Design string into design, sampling type & version
+  separate_design_type_v(var = "Design") %>%
+  mutate(
+    Samples_per_site = factor(Samples_per_site, levels = site_samples_n),
+    #Hours = relevel(Hours, ref = "Some")
+  ) %>%
+  select(-c(sim_names))
+
+# gather all predictions
+# note that cv_p_true avg has empty values for e.g., samples_per_site
+sim_results_l2 <- sim_results %>%
+  gather("Design", "Prediction", cv_p_all_names) %>%  #View()
+  #separate Design string into design, sampling type & version
+  separate_design_type_v(var = "Design") %>%  
+  
+  # if gold standard campaign, use "all" for these variables
+  mutate_at(c("Samples_per_site", "Season_duration", "Hours", "Version"), 
+            ~ifelse(grepl("true", Design), "All", as.character(.)), 
+            ) %>%  
+  mutate(
+    Samples_per_site = factor(Samples_per_site, levels = c("All", site_samples_n )),
+    Season_duration = factor(Season_duration, levels = c("All", unique(as.character(sim_results_l$Season_duration)))),  
+    Version = factor(Version, levels = c("All",unique(as.character(sim_results_l$Version)))),  
+    ) %>%
+  select(-c(sim_names))
+   
+
+#observations vs predictions side-by-side
+estimates <- sim_results %>%
+  select(-contains("cv_"))  %>%
+  gather("Design", "Estimate",  sim_names, true_avg_name) %>%
+  #only keep balanced, long esimates for the 1st Campaign - all sims have the same value
+  filter(!(grepl("true_avg", Design) & Campaign !=1))
+ 
+predictions  <- sim_results %>%  
+  #drop estimates (non-predictions)
+  select(-c(sim_names, true_avg_name)) %>% 
+  gather("Design", "Prediction", contains("cv_")) %>%  #View()
+  #make names same as estimates df
+  mutate(Design = gsub("cv_p_", "", Design)) %>%
+  #only keep long-term for the 1st Campaign - all sims have the same value
+  filter(!(grepl("true_avg", Design) & Campaign !=1))
+  
+#combine 
+comp <- left_join(predictions, estimates) %>% 
+  #separate Design string into design, sampling type & version
+  separate_design_type_v(var = "Design") %>% #View()
+  
+  # if gold standard campaign, use "all" for these variables
+  mutate_at(c("Samples_per_site", "Season_duration", "Hours"), 
+            ~ifelse(grepl("true", Design), "All", as.character(.)), 
+            ) %>%  
+  mutate(
+    Samples_per_site = factor(Samples_per_site, levels = c("All", site_samples_n )),
+    Season_duration = factor(Season_duration, levels = c("All", unique(as.character(sim_results_l$Season_duration)))),  
+    )
+  
+   
+```
+
+
+
+# Results 
+
+```{r, start_of_results}
+#make these plots larger
+knitr::opts_chunk$set(
+  fig.height = 10
+  )
+
+```
+
+common variables
+
+## predictions table
+
+```{r}
+#predictions table 
+
+sim_results_l2 %>%
+  filter(!(grepl("true_avg", Design) & Campaign !=1)) %>%
+  
+  group_by(Season_duration, Version, Type, Hours, Samples_per_site) %>%
+  summarize(
+    N = n(),
+    Min = min(Prediction),
+    Q25 = quantile(Prediction, 0.25),
+    Q50 = quantile(Prediction, 0.50),
+    Q75 = quantile(Prediction, 0.75),
+    Max = max(Prediction)
+    
+  ) %>%
+  kable(caption = "PLS NOx Predictions (ppb). N = # sites x # simulations",
+        digits=1
+        ) %>%
+  kable_styling()
+
+```
+
+```{r}
+## Boxplots
+```
+
+
+
+```{r, eval=F}
+ 
+#unique(comp$Design)
+
+sim_results %>%
+  gather("Design", "Estimate", sim_names, true_avg_name) %>% 
+  filter(!(grepl("true_avg", Design) & Campaign >1))  %>%  
+  separate_design_type_v(var = "Design") %>% 
+  # if gold standard campaign, use "all" for these variables
+  
+  # if gold standard campaign, use "all" for these variables
+  mutate_at(c("Samples_per_site", "Season_duration", "Hours", "Version"), 
+            ~ifelse(grepl("true", Design), "All", as.character(.)), 
+            ) %>%  
+  mutate(
+    Samples_per_site = factor(Samples_per_site, levels = c("All", site_samples_n )),
+    Season_duration = factor(Season_duration, levels = c("All", unique(as.character(sim_results_l$Season_duration)))),  
+    Version = factor(Version, levels = c("All",unique(as.character(sim_results_l$Version)))),  
+    ) %>%
+
+  ggplot(aes(x=Season_duration, y= Estimate, 
+             fill=Hours,
+             linetype=Samples_per_site,
+             )) + 
+  facet_grid(~Version, scales="free_x", labeller = "label_both") +  #
+  geom_boxplot(outlier.size = outlier_size,
+               outlier.alpha = outlier_alpha -0.1) + 
+  
+  labs(
+    x = "Sampling Season Duration",
+    y = "NOx Estimate (ppb)",
+    linetype = "Samples per Site"
+  )
+
+
+
+```
+
+
+## Scatter & line plots 
+
+
+estimates 
+
+```{r}
+print("NOx estimates relative to the true average")
+
+sim_results %>%
+  gather("Design", "Estimate", sim_names) %>%  
+  separate_design_type_v(var = "Design") %>% #View()  
+  mutate(
+    Samples_per_site = factor(Samples_per_site, levels = site_samples_n), 
+    ) %>%
+  
+  ggplot(aes(x=true_avg, y= Estimate, 
+             col=Hours,
+             linetype=Samples_per_site,
+             )) + 
+  facet_grid_equal(Version~Season_duration, labeller = "label_both") +
+  
+  theme(aspect.ratio = 1) +
+  geom_abline(slope = 1, intercept = 0, alpha=0.7) +
+  geom_point(alpha=0.05) + 
+  stat_smooth(geo='line', method="lm", se=F, alpha=0.8, size=2) +
+  labs(
+    x = "True Conc (ppb)",
+    y = "Estimated Campaign Conc (ppb)",
+    linetype = "Samples per Site"
+  )
+
+
+```
+
+predictions
+
+
+```{r, echo=F}
+### --> drop extreme values?
+
+#drop values greater than this
+high_q <- 0.999
+
+```
+
+```{r}
+sim_results_l %>%
+  #ungroup() %>%
+  filter(Prediction > quantile(Prediction, high_q)) %>%
+  group_by(Samples_per_site, Season_duration, Version, Hours, Type) %>%
+  summarize(
+    n = n(),
+    Prediction_values = paste(round(unique(Prediction)), collapse = ", ")
+  ) %>%
+  kable(caption = paste0("High prediction values > ", high_q, " quantile"),
+        ) %>%
+  kable_styling()
+
+
+```
+
+scatterplots 
+
+* dropping high values in scatterplots (keeping in line plots)
+
+```{r}
+print("Campaign NOx predictions relative to the gold standared campaign")
+
+sim_results_l %>%
+  
+  # TEMP ??
+  filter(Prediction <= quantile(Prediction, high_q)) %>%
+  
+  ggplot(aes(x=cv_p_true_avg, y= Prediction, 
+             col=Hours,
+             linetype=Samples_per_site,
+             )) + 
+  facet_grid_equal(Version~Season_duration, labeller = "label_both") +
+  theme(aspect.ratio = 1) +
+  geom_abline(slope = 1, intercept = 0, alpha=0.5) +
+  geom_point(alpha=0.1) + 
+  
+  labs(
+    x = "Gold Standared Prediction (ppb)",
+    y = "Campaign Prediction (ppb)",
+    linetype = "Samples per Site"
+  )
+
+```
+
+line plots
+
+```{r}
+sim_results_l %>%
+  # TEMP ??
+  #filter(Prediction <= quantile(Prediction, high_q)) %>%
+  
+  ggplot(aes(x=cv_p_true_avg, y= Prediction, 
+             col=Hours,
+             linetype=Samples_per_site,
+             )) + 
+  facet_grid_equal(Version~Season_duration, labeller = "label_both") +
+  theme(aspect.ratio = 1) +
+  geom_abline(slope = 1, intercept = 0, alpha=0.5) +
+  
+  stat_smooth(geo='line', method="lm", se=F, alpha=0.1, size=0.5, 
+              aes(group= interaction(Campaign, Hours),
+                  col=Hours,
+                  linetype=Samples_per_site
+                  )) +
+  stat_smooth(geo='line', method="lm", se=F, alpha=0.8, size=2) +
+  
+  labs(
+    x = "Gold Standared Prediction (ppb)",
+    y = "Campaign Prediction (ppb)",
+    linetype = "Samples per Site"
+  )
+
+
+```
+
+
+## Site-specific Bias
+
+example sites
+
+```{r}
+# # select sites for primary pollutant 
+# all_avgs_p_pollutant <- all_avgs %>%
+#   filter(Parameter.Name== p_pollutant)
+
+# stratify by low, high & mid conc sites
+low_quant <- quantile(sim_results$true_avg[sim_results$Campaign==1], 0.25)
+high_quant <- quantile(sim_results$true_avg[sim_results$Campaign==1], 0.75)
+ 
+low_conc_sites <- sim_results$native_id[sim_results$true_avg < low_quant ] %>% unique()
+high_conc_sites <- sim_results$native_id[sim_results$true_avg > high_quant ] %>% unique()
+mid_conc_sites <- setdiff(unique(sim_results$native_id), c(low_conc_sites, high_conc_sites))
+
+# sample 5 sites per low, mid, high conc category
+tot_sample_n <- 12
+sample_n <- tot_sample_n/3 
+
+set.seed(3)
+sample_sites <- c(sample(low_conc_sites, size = sample_n, replace = F), 
+                  sample(high_conc_sites, size = sample_n, replace = F), 
+                  sample(mid_conc_sites, size = sample_n, replace = F)
+                  )
+
+#arrange sites by GS conc
+site_conc_order <- sim_results %>%
+  #low conc first --> higher conc's later
+  arrange(true_avg) %>% 
+  distinct(native_id) %>% 
+  pull(native_id)
+
+## sample sites arranged by GS conc
+site_conc_order_sample <- site_conc_order[site_conc_order %in% sample_sites]
+
+#high_q3 <- 0.96
+
+```
+
+
+predictions
+
+
+```{r, fig.height=12}
+print(paste0(
+  "Site prediction biases relative to the gold standard predictions. Sample of ", tot_sample_n, " random sites"))
+
+for(i in seq_along(unique(sim_results_l$Version))) {
+  #i=1
+  print(paste("Version", i))
+  
+  p <- sim_results_l %>%
+      # sample a few sites
+    filter(native_id %in% sample_sites,
+           Version == i
+           ) %>%
+      mutate(
+        bias = Prediction - cv_p_true_avg,
+        native_id = factor(native_id, levels = site_conc_order_sample),
+        True_conc = ifelse(native_id %in% low_conc_sites, "Low",
+                             ifelse(native_id %in% mid_conc_sites, "Middle", "High"
+                             )),
+        True_conc = factor(True_conc, levels = c("High", "Middle", "Low")),
+        
+        Hours = factor(Hours,  c("All", "Most", "Some"))
+             ) %>%  
+      {
+        ggplot(data=., aes(y=native_id,
+                 x= bias,
+                 fill = Hours,
+                 linetype = Samples_per_site
+                 ),
+             alpha=0.8) +
+          
+          geom_boxplot() +
+          geom_vline(xintercept = 0, linetype = "dashed", alpha = 0.8) +
+          facet_grid(True_conc ~ Version + Season_duration, labeller = "label_both",
+                     scales = "free_y"
+                     ) +
+        labs(y= "Site",
+             x = "Prediction Bias (ppb)",
+             linetype = "Samples per Site"
+             )  
+      }
+  
+  print(p)
+
+}
+
+```
+
+## Model Assessment
+
+
+```{r}
+# ref: GS estimates
+t_a <- sim_results_l2 %>%
+  #drop long-term sim > 1 (before filtering by quantile)
+  filter(grepl("short", Type, ignore.case = T) |
+           (grepl("long", Type, ignore.case = T)  & Campaign == 1)
+         ) %>%  
+  
+  
+  # # TEMP ??
+  # filter(Prediction <= quantile(Prediction, high_q)) %>%
+  
+  group_by(Design, Type, Campaign) %>% 
+  summarize(
+    RMSE = mse_fn(obs = true_avg, pred = Prediction),
+    R2_mse = r2_mse_based(obs = true_avg, pred = Prediction),
+    R2_reg = cor(true_avg, Prediction)^2,
+  ) %>%
+  gather("Parameter", "Value", RMSE, R2_mse, R2_reg) %>%
+  separate_design_type_v() %>%
+  ungroup() %>%
+  mutate( Reference = "True Average") 
+
+#ref: design estimates
+t_b <- comp %>%
+  
+  #  # TEMP ??
+  # filter(Prediction <= quantile(Prediction, high_q)) %>%
+  
+  #calculate summary parameters
+  group_by(Design, Type, Campaign) %>%  
+  summarize(
+    RMSE = mse_fn(obs = Estimate, pred = Prediction),
+    R2_mse = r2_mse_based(obs = Estimate, pred = Prediction),
+    R2_reg = cor(Estimate, Prediction)^2,
+    ) %>%
+  gather("Parameter", "Value", RMSE, R2_mse, R2_reg) %>%
+  separate_design_type_v() %>%
+  ungroup() %>%
+  mutate(Reference = "Campaign Average") 
+
+t_comp <- rbind(t_a, t_b) %>%
+  mutate(Reference = relevel(factor(Reference), ref = "True Average")) %>%
+  # if gold standard campaign, use "all" for these variables
+  mutate_at(c("Samples_per_site", "Season_duration", "Hours"), 
+            ~ifelse(grepl("true", Design), "All", as.character(.)), 
+            ) %>%
+  mutate(
+    Samples_per_site = factor(Samples_per_site, levels = c("All", site_samples_n )),
+    Season_duration = factor(Season_duration, levels = c("All", unique(as.character(sim_results_l$Season_duration)))),  
+  )
+  
+```
+
+* not differentiating by version
+
+### --> clarify that each boxplot is 60 campaigns b/c versions are combined 
+
+```{r, fig.height=12}
+print(paste0("Model performance: Design predictions vs. measured truth. Horizontal line is from the gold standard (long-term) campaign using all the data"))
+
+plot_true_val <- t_comp %>%
+  filter(grepl("true", Design)) %>%
+  distinct(Parameter, Value)
+
+#R2
+p1 <- t_comp %>%
+  filter(grepl("R2", Parameter, ignore.case = T),
+         Version != "All"
+         ) %>%   
+  {
+    ggplot(., aes(y=Value, 
+                  x=Season_duration, 
+                  fill=Hours,
+                  linetype=Samples_per_site
+                  )) + 
+     #long-term
+      geom_hline(data = filter(plot_true_val, grepl("R2", Parameter)), aes(yintercept = Value),
+                 alpha=0.5, linetype=5
+                 ) +
+      #short-term 
+     geom_boxplot(data = subset(., Type == "Short-Term" ),
+                  #alpha=0.6,
+                  outlier.size = outlier_size,
+                  outlier.alpha = outlier_alpha
+                  ) +
+    facet_grid(Parameter~ Reference, 
+               labeller = "label_both") + 
+      #make larger text
+      theme(text = element_text(size=16),) + 
+      labs(
+        x = "Season Duration",
+        linetype = "Samples per Site"
+      )
+     
+  }
+
+#print(p1)
+
+
+#RMSE    
+p2 <- t_comp %>%
+  filter(grepl("RMSE", Parameter, ignore.case = T),
+         Version != "All"
+         ) %>%   
+  {
+    ggplot(., aes(y=Value, 
+                  x=Season_duration, 
+                  fill=Hours,
+                  linetype=Samples_per_site
+                  )) + 
+     #long-term
+      geom_hline(data = filter(plot_true_val, grepl("RMSE", Parameter)), aes(yintercept = Value),
+                 alpha=0.5, linetype=5
+                 ) +
+      #short-term 
+     geom_boxplot(data = subset(., Type == "Short-Term" ),
+                  #alpha=0.6,
+                  outlier.size = outlier_size,
+                  outlier.alpha = outlier_alpha
+                  ) +
+    facet_grid(Parameter~ Reference, 
+               scales = "free", 
+               labeller = "label_both") + 
+      #make larger text
+      theme(text = element_text(size=16)) + 
+      
+      scale_y_log10() +
+      
+      labs(
+        x = "Season Duration",
+        linetype = "Samples per Site"
+      )
+  
+  }
+
+#print(p2)
+  
+ggarrange(p1,p2, 
+        nrow = 2, heights = c(1.5, 1),
+        common.legend = TRUE, legend = "bottom"
+        )  
+  
+```
+
+
+## RSD
+
+
+```{r}
+
+print(paste0("NOx. Prediction RSD of each campaign relative to the gold standard. N = ", campaign_sim, " campaigns per design (boxplot)"))
+
+sim_results_l %>%
+  group_by(Design, Campaign, #Version, Type
+           ) %>%
+  summarize(RSD = sqrt(var(Prediction)/var(cv_p_true_avg))) %>%
+  ungroup() %>%
+  separate_design_type_v() %>% 
+  {
+    
+    ggplot(., aes(x=RSD,
+                  y=Season_duration,
+                  fill=Hours,
+                  linetype=Samples_per_site
+                  )) +
+      facet_grid(~Version, #vars(Version), 
+                 labeller = "label_both")+ #Season_duration
+      geom_vline(xintercept = 1, linetype="dashed", alpha=0.8) +
+      geom_boxplot(
+        outlier.size = outlier_size,
+        outlier.alpha = outlier_alpha,
+        ) +
+      
+      labs(x = "Relative Standard Deviation (RSD)",
+           y = "Season Duration"
+      )  
+  }
+
+ 
+
+```
+
