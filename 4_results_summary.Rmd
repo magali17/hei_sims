@@ -277,7 +277,7 @@ monitoring_region <- readRDS(file.path("..", "..", "1. Our Campaign", "Our Campa
   st_transform(m_crs)
 
 # grid predictions
-grid_predictions0 <- readRDS(file.path("Output", "grid_predictions.rda"))  %>%
+grid_predictions0 <- readRDS(file.path("Output", "UK Predictions", "grid_predictions.rda"))  %>%
   label_pollutant() %>%
   # calculate summary statistics for each location across campaigns
   group_by(location_id, longitude, latitude, spatial_temporal, design, version, variable) %>%
@@ -375,7 +375,13 @@ add_lvls <- function(dt, spatial_temporal. = st_levels, design_levels. = design_
 
 
 ```{r}
-model_eval <- add_lvls(model_eval0) %>%
+model_eval <- #add_lvls(model_eval0) %>%
+  model_eval0 %>%
+  mutate(
+    version = factor(version, levels = version_levels),
+    design = factor(design, levels = design_levels),
+    out_of_sample = factor(out_of_sample, levels = oos_lvls)
+  ) %>% 
   label_pollutant()
   
 geo_dist_ref <- sort_num_lvs(design_name =  str_subset(unique(model_eval0$design), "geographic"))[1]
@@ -1195,10 +1201,13 @@ full_campaign <- model_eval %>%
   filter(grepl("gs_", reference),
          grepl("full", design),
          ) %>%
-  distinct(mean_min_train_to_pred_dist_km, training_monitors_per_100km2, out_of_sample, variable, reference, RMSE, MSE_based_R2, reg_based_R2)
+  distinct(#mean_min_train_to_pred_dist_km, training_monitors_per_100km2, 
+    out_of_sample, variable, reference, RMSE, MSE_based_R2#, reg_based_R2
+    )
 
 
-eval_cols <- c("RMSE", "MSE_based_R2", "reg_based_R2")
+eval_cols <- c("RMSE", "MSE_based_R2"#, "reg_based_R2"
+               )
 
 ```
 
@@ -1738,7 +1747,9 @@ ggsave(file.path(image_path, paste0("campaign_estimates_model_eval2_.png")), wid
 
 same as above, but only using gold standard reference estimates & showing a 95% CI
 
-```{r}
+### --> make eval=T. ERROR:  spatial_temporal not found 
+
+```{r, eval=F}
 
 temp <- normalized_model_eval %>%
   filter(!grepl("reg_based_R2", model_eval),
