@@ -1494,7 +1494,8 @@ hline <- 0.85
 
 temp <- site_visit_summary %>%
   filter(grepl(i, model_eval),
-         grepl("gs_", reference)
+         grepl("gs_", reference),
+         !grepl("CO2", variable)
          ) %>%
   mutate(sites = as.numeric(as.character(sites)),
          visits = factor(as.character(visits), levels = unique(site_visit_summary$visits)),
@@ -1511,8 +1512,10 @@ p <- ggplot(data=temp, aes(y=median_value, x=total_stops, col=sites, shape=visit
   # make higher site counts darker
   scale_color_continuous(high = "#132B43", low = "#56B1F7") +
   scale_shape_manual(values=1:length(unique(site_visit_summary$visits))) +
-  theme(text = element_text(size=poster_text_size)) +
-  guides(size = "none") +
+  theme(text = element_text(size=poster_text_size-2)) +
+  guides(size = "none",
+         shape = guide_legend(override.aes = list(size = 5))
+          ) +
   labs(x = "Total Stops (Thousands)", 
        #y = paste("Median Normalized", i), 
        y = expression(Median~R[Normalized]^2),
@@ -1898,7 +1901,8 @@ p <- normalized_model_eval %>%
          !grepl("distance|fewer total stops", design),
          !grepl("full", design),
          grepl("CV", out_of_sample),
-         grepl("R2", model_eval)
+         grepl("R2", model_eval),
+         !grepl("CO2", variable)
          ) %>%  
   # #calculate normalized RMSE, using ___ value as denominator  
   mutate(model_eval = ifelse(grepl("RMSE", model_eval), "Normalized RMSE", "Normalized R2" ),
@@ -1919,7 +1923,7 @@ p <- normalized_model_eval %>%
   facet_grid(cols = vars(design), scales = "free", switch = "y",) +
   geom_smooth(stat = 'summary', fun.data = median_hilow, fun.args = list(conf.int = 0.5), alpha = 0.2) + 
   
-  geom_hline(data=filter(temp, grepl("R2", model_eval)), aes(yintercept=normalized_value, col=variable), linetype=3, alpha=1) +
+  geom_hline(data=filter(temp, grepl("R2", model_eval), !grepl("CO2", variable)), aes(yintercept=normalized_value, col=variable), linetype=3, alpha=1) +
   theme(text = element_text(size=poster_text_size),
         legend.box = "vertical", 
         legend.box.just = c("left")
@@ -2484,16 +2488,16 @@ mutate(
 # dt = df0 %>%
 #   filter(grepl("Full", design),
 #          grepl("PNC", variable),
-#          ) 
+#          )
 # var = "prediction_median"
-# name="Conc." 
+# name="Conc."
 # x= "PNC (pt/cm3)"
 
-map_predictions <- function(dt, var = "prediction_median", map_type="", new_text_size="", ...) {
+map_predictions <- function(dt, var = "prediction_median", map_type="", new_text_size="", var_names.=var_names, ...) {
   
   dt <- rename(dt, value = all_of(var))
   
-  prediction_maps <- lapply(var_names, function(x) {
+  prediction_maps <- lapply(var_names., function(x) {
     
     p <- filter(dt, variable == x) %>%
       ggplot() +
@@ -2501,7 +2505,9 @@ map_predictions <- function(dt, var = "prediction_median", map_type="", new_text
       scale_colour_gradient(low = "yellow", high = "red", ...) +
       facet_grid(cols = vars(variable), rows = vars(design), switch = "y")  +
       theme_void() +
-      theme(legend.justification=c(0,1), legend.position = c(1,1))
+      theme(legend.justification=c(0,1), 
+            legend.position = c(1,.9)
+            )
     
     #remove labels from 2+ columns
     if(!grepl("PNC", x)) {
@@ -2509,7 +2515,11 @@ map_predictions <- function(dt, var = "prediction_median", map_type="", new_text
       }
     
     if(map_type=="prediction_difference") {
-      p <- p + scale_colour_gradient2(low = "#56B1F7", high = "red", ...)
+      p <- p + scale_colour_gradient2(low = "#56B1F7", high = "red", ...) +
+        theme(strip.background.x = element_blank(), strip.text.x = element_blank(),
+              legend.position = c(1,1)
+              ) 
+        
       }
     
      if(new_text_size !=""){
@@ -2521,7 +2531,7 @@ map_predictions <- function(dt, var = "prediction_median", map_type="", new_text
     })
   
   prediction_maps %>% 
-    ggarrange(plotlist = ., ncol = length(var_names)) 
+    ggarrange(plotlist = ., ncol = length(var_names.)) 
 
 }
 
@@ -2567,23 +2577,28 @@ ggsave(file.path(image_path, "SI", paste0("maps_of_prediction_iqr.png")),  heigh
 -for poster
 
 ```{r}
+reduce_size <- 0.88
+
 full_map_b <- df0 %>%
-  filter(grepl("Full", design)) %>%
-  map_predictions(., var = "prediction_median", name="Conc.", new_text_size=poster_text_size#*.85
+  filter(grepl("Full", design),
+         !grepl("CO2", variable)
+         ) %>% #View()
+  map_predictions(., var = "prediction_median", name="Conc", new_text_size=poster_text_size*reduce_size, var_names. = str_subset(var_names, "CO2", negate = T)
                   )  
   
 # Median site prediction difference relative to the full campaign 
 difference_map_b <- df0 %>%
-  filter(!grepl("Full", design)) %>%
-  map_predictions(., var = "median_prediction_diff", map_type = "prediction_difference", name="Diff", new_text_size=poster_text_size#*.85
+  filter(!grepl("Full", design),
+         !grepl("CO2", variable)
+         ) %>%
+  map_predictions(., var = "median_prediction_diff", map_type = "prediction_difference", name="Diff", new_text_size=poster_text_size*reduce_size, var_names. = str_subset(var_names, "CO2", negate = T)
                   )  
 
 print("Comparison of the full campaign exposure surface (top) and the median prediction difference for some example monitoring designs.")
 
 ggarrange(full_map_b, difference_map_b, ncol = 1, heights = c(1,4))
     
-
-ggsave(file.path(hei_image_path, "maps_of_prediction_diff.png"),  height = 20, width = 17)
+ggsave(file.path(hei_image_path, "maps_of_prediction_diff.png"),  height = 20, width = 14)
 
 ```
 
