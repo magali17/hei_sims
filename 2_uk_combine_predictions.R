@@ -14,7 +14,7 @@ pacman::p_load(tidyverse, sf)
 
 set.seed(1)
 
-run_buffered_loo <- TRUE
+run_buffered_loo <- FALSE
 
 ##################################################################################################
 # LOAD DATA & PREDICTIONS

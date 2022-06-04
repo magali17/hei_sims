@@ -3,12 +3,12 @@
 ##################################################################################################
 
 # Clear workspace of all objects and unload all extra (non-base) packages
-# rm(list = ls(all = TRUE))
-# if (!is.null(sessionInfo()$otherPkgs)) {
-#   res <- suppressWarnings(
-#     lapply(paste('package:', names(sessionInfo()$otherPkgs), sep=""),
-#            detach, character.only=TRUE, unload=TRUE, force=TRUE))
-# }
+rm(list = ls(all = TRUE))
+if (!is.null(sessionInfo()$otherPkgs)) {
+  res <- suppressWarnings(
+    lapply(paste('package:', names(sessionInfo()$otherPkgs), sep=""),
+           detach, character.only=TRUE, unload=TRUE, force=TRUE))
+}
 
 pacman::p_load(tidyverse,
                parallel, #mclapply; detectCores()
@@ -44,7 +44,9 @@ for(i in 1:nrow(temp0)) {
     pull(location)
   
   # minimum distance between prediction & training locations
-  temp0$min_train_to_pred_dist[i] <- round(pt_dist(pred_loc, train_locs)/1000, 1)
+  #temp0$min_train_to_pred_dist[i] <- round(pt_dist(pred_loc, train_locs)/1000, 1)
+  ## don't need to round & will keep in meters vs km
+  temp0$min_train_to_pred_dist[i] <- pt_dist(pred_loc, train_locs)
 }  
 
 saveRDS(temp0, file.path("Output", "spatial_cluster.rda"))
@@ -53,9 +55,10 @@ cluster_df <- annual %>%
   filter(grepl("full", design)) %>%
   left_join(temp0) %>%
   mutate(
-    version = cut_number(min_train_to_pred_dist, n = distance_bins, dig.lab=1),
+    #version = min_train_to_pred_dist, 
+    #version = cut_number(min_train_to_pred_dist, n = distance_bins, dig.lab=1),
     #version = cut(min_train_to_pred_dist, breaks = distance_bins),
-    design = "geographic distance 2 (m)",
+    design = "geographic distance (m)",
     out_of_sample = "Spatial CV",
     spatial_temporal = "spatial"
   ) %>%
@@ -130,9 +133,10 @@ pca_df <- annual %>%
   filter(grepl("full", design)) %>%
   left_join(pca_temp0) %>%
   mutate(
-    version = cut_number(min_train_to_pred_dist, n = distance_bins, dig.lab=1),
+    #version = min_train_to_pred_dist, 
+    #version = cut_number(min_train_to_pred_dist, n = distance_bins, dig.lab=1),
     #version = cut(min_train_to_pred_dist, breaks = distance_bins),
-    design = "PCA distance 2",
+    design = "PCA distance",
     out_of_sample = "PCA Spatial CV",
     spatial_temporal = "spatial"
   ) %>%
@@ -156,13 +160,13 @@ pca_cluster_predictions <- mclapply(group_split(pca_df, variable), FUN = do_cv, 
 ##################################################################################################
 # SAVE PREDICTIONS
 ##################################################################################################
-rbind(cluster_predictions, pca_cluster_predictions) %>%
+rbind(cluster_predictions, pca_cluster_predictions) %>% 
   mutate(out_of_sample = "Spatial Clusters") %>%
-  
   saveRDS(., file.path("Output", "UK Predictions", "cluster_predictions.rda"))
 
 #save version levels
-saveRDS(c(levels(cluster_df$version), levels(pca_df$version)), file.path("Output", "cluster_levels.rda"))
+# --> NEED TO UPDATE/REMOVE IF USE CONTINUOUS CLUSTER DISTANCE
+#saveRDS(c(levels(cluster_df$version), levels(pca_df$version)), file.path("Output", "cluster_levels.rda"))
 
 
 print("done")
