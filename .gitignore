@@ -1,9 +1,14 @@
+# specific files
 .DS_Store
 .RData
 .Rhistory
 .Rproj.user/
+
+#all files ending in...
 *.Rproj
 *.html
+
+# entire directories
 Output/
 code review/
 z. archive/
