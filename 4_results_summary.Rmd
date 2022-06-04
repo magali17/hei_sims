@@ -1,0 +1,1948 @@
+---
+title: "ACT-TRAP Simulations Results Summary"
+author: "Magali Blanco"
+date: ' `r Sys.time()` '
+output:
+  html_document:
+    df_print: paged
+    toc: yes
+    toc_depth: '3'
+    number_sections: true
+    toc_float: true
+    collapsed: false
+    smooth_scroll: false
+editor_options: 
+  chunk_output_type: console
+params:
+  args: myarg
+---
+
+# . 
+
+```{r, setup, include=F}
+# Clear workspace of all objects and unload all extra (non-base) packages
+rm(list = ls(all = TRUE))
+if (!is.null(sessionInfo()$otherPkgs)) {
+  res <- suppressWarnings(
+    lapply(paste('package:', names(sessionInfo()$otherPkgs), sep=""),
+           detach, character.only=TRUE, unload=TRUE, force=TRUE))
+}
+
+knitr::opts_chunk$set(echo = F, 
+                      cache=F, cache.comments = F, 
+                      message = F, warning = F, 
+                      tidy.opts=list(width.cutoff=60), tidy=TRUE,
+                      fig.height = 8, fig.width = 8
+                      )  
+
+pacman::p_load(#kable, 
+               kableExtra, 
+               broom,  #tidy()
+               ggpubr, 
+               tidyverse,cowplot,
+               ggmap, sf, ggspatial, #mapping...adding scales, N arrows
+               units, #convert between e.g., m to km
+               VCA, #anovaVCA()
+               parallel #mclapply()
+               )    
+ 
+# ggplot settings
+theme_set(theme_bw())
+theme_update(legend.position = "bottom")
+
+
+set.seed(1)
+
+image_path <- file.path("..", "Manuscript", "Images")
+##for poster images
+hei_image_path <- file.path("~", "OneDrive - UW", "Documents", "Post Doc", "Meetings", "20220626 HEI Conference", "HEI Simulations Poster", "Images")
+
+```
+
+
+
+Functions
+
+```{r}
+#source("0_functions.R")
+
+# fn labels variables
+
+label_pollutant <- function(dt) {
+  
+  dt <- dt %>%
+    mutate(
+     variable = case_when(
+       variable == "co2_umol_mol" ~ "CO2 (ppm)", 
+       variable == "ma200_ir_bc1" ~ "BC (ng/m3)", 
+       variable == "no2" ~ "NO2 (ppb)", 
+       variable == "pm2.5_ug_m3" ~ "PM2.5 (ug/m3)",
+       variable == "pnc_noscreen" ~ "PNC (pt/cm3)",
+       TRUE ~ variable
+       ),
+     variable = factor(variable, levels = c("PNC (pt/cm3)", "BC (ng/m3)", "NO2 (ppb)", "PM2.5 (ug/m3)", "CO2 (ppm)"))
+     )
+  
+  return(dt)
+      
+  }
+```
+
+
+```{r}
+
+# facet_wrap_equal() function acts like facet_wrap() in ggplot but it sets the axes ranges (min/max) of each facet to same scale so that the 1-1 line is always down the middle :D !!
+
+# code source: https://fishandwhistle.net/post/2018/modifying-facet-scales-in-ggplot2/ 
+
+FacetEqualWrap <- ggproto(
+  "FacetEqualWrap", FacetWrap,
+  
+  train_scales = function(self, x_scales, y_scales, layout, data, params) {
+    
+    # doesn't make sense if there is not an x *and* y scale
+    if (is.null(x_scales) || is.null(x_scales)) {
+      stop("X and Y scales required for facet_equal_wrap")
+    }
+    
+    # regular training of scales
+    ggproto_parent(FacetWrap, self)$train_scales(x_scales, y_scales, layout, data, params)
+    
+    # switched training of scales (x and y and y on x)
+    for (layer_data in data) {
+      match_id <- match(layer_data$PANEL, layout$PANEL)
+      
+      x_vars <- intersect(x_scales[[1]]$aesthetics, names(layer_data))
+      y_vars <- intersect(y_scales[[1]]$aesthetics, names(layer_data))
+      
+      SCALE_X <- layout$SCALE_X[match_id]
+      ggplot2:::scale_apply(layer_data, y_vars, "train", SCALE_X, x_scales)
+      
+      SCALE_Y <- layout$SCALE_Y[match_id]
+      ggplot2:::scale_apply(layer_data, x_vars, "train", SCALE_Y, y_scales)
+    }
+    
+  }
+)
+
+facet_wrap_equal <- function(...) {
+  # take advantage of the sanitizing that happens in facet_wrap
+  facet_super <- facet_wrap(...)
+  
+  ggproto(NULL, FacetEqualWrap,
+          shrink = facet_super$shrink,
+          params = facet_super$params
+  )
+}
+
+
+#same as above but for facet_grid()
+FacetEqualGrid <- ggproto(
+  "FacetEqualGrid", FacetGrid,
+  
+  train_scales = function(self, x_scales, y_scales, layout, data, params) {
+    
+    # doesn't make sense if there is not an x *and* y scale
+    if (is.null(x_scales) || is.null(x_scales)) {
+      stop("X and Y scales required for facet_equal_wrap")
+    }
+    
+    # regular training of scales
+    ggproto_parent(FacetGrid, self)$train_scales(x_scales, y_scales, layout, data, params)
+    
+    # switched training of scales (x and y and y on x)
+    for (layer_data in data) {
+      match_id <- match(layer_data$PANEL, layout$PANEL)
+      
+      x_vars <- intersect(x_scales[[1]]$aesthetics, names(layer_data))
+      y_vars <- intersect(y_scales[[1]]$aesthetics, names(layer_data))
+      
+      SCALE_X <- layout$SCALE_X[match_id]
+      ggplot2:::scale_apply(layer_data, y_vars, "train", SCALE_X, x_scales)
+      
+      SCALE_Y <- layout$SCALE_Y[match_id]
+      ggplot2:::scale_apply(layer_data, x_vars, "train", SCALE_Y, y_scales)
+    }
+    
+  }
+)
+
+facet_grid_equal <- function(...) {
+  # take advantage of the sanitizing that happens in facet_wrap
+  facet_super <- facet_grid(...)
+  
+  ggproto(NULL, FacetEqualGrid,
+          shrink = facet_super$shrink,
+          params = facet_super$params
+  )
+}
+
+
+```
+
+```{r}
+#add appropriate labels for the fewer stops design
+# ONLY RELEVANT FOR THE TOTAL STOPS DESIGN: clarify the number of simulation visits, sites and total stops 
+
+relabel_fewer_stops <- function(dt) {
+  dt %>%  
+  #group_by(variable, design, version, campaign, out_of_sample) %>%
+  mutate(
+    #sites = as.character(length(unique(location))),
+    
+    # for total stops design, use the design #s (not necessarily the actual simulation #s - there may be minor discrepancies)
+    sites = ifelse(grepl("stops", design), str_extract(version, " [0-9]{1,3}"), NA),
+    sites = as.numeric(gsub(" ", "", sites)),
+    visits = ifelse(grepl("stops", design), as.numeric(str_extract(version, "^[0-9]{1,2}")), visits),
+    # NOTE: this is only accurate for the total stops design. e.g., sites have a different number of total visits (21-26)
+    total_stops = visits * sites,
+    # the actual max for this fewer total stops version
+    total_stops = ifelse(total_stops == 26*278, 7080, total_stops),
+    version = ifelse(grepl("stops", design), as.character(total_stops), version)
+    ) #%>% ungroup()
+  
+}
+
+```
+
+
+# Upload Data 
+
+
+```{r}
+# mapping variables
+project_crs <- 4326  #lat/long
+m_crs <- 32148
+
+# 2-min winsorized medians used in simulations
+stops <- readRDS(file.path("Output", "stops_used.rda")) %>%  
+  #gather(variable, value, co2_umol_mol:pnc_noscreen)
+  pivot_longer(c("ma200_ir_bc1", "co2_umol_mol", "no2", "pm2.5_ug_m3", "pnc_noscreen") ,
+               #co2_umol_mol:pnc_noscreen, 
+               names_to ="variable", values_to = "value") 
+
+# uk predictions
+predictions0 <- readRDS(file.path("Output", "UK Predictions", "all_predictions.rda" #"predictions.rda"
+                                  )) %>% 
+  #gather("reference", "estimate", contains("estimate")) %>%
+  pivot_longer(contains("estimate"), names_to = "reference", values_to =  "estimate") %>%
+  # some campaigns don't have "estimtes" for test set locations
+  drop_na(estimate) %>%
+  
+  # ONLY RELEVANT FOR THE TOTAL STOPS DESIGN: clarify the number of simulation visits, sites and total stops 
+  relabel_fewer_stops() %>%
+  
+  select(
+    spatial_temporal, design, version, visits, sites, total_stops, campaign, variable, out_of_sample, location, prediction, reference, estimate 
+  )
+
+# simulation details
+sims0 <- readRDS(file.path("Output", "annual_training_set.rda")) %>%  
+  distinct(location, route, visits, campaign, design, version, spatial_temporal) %>%
+  # ONLY RELEVANT FOR THE TOTAL STOPS DESIGN: clarify the number of simulation visits, sites and total stops 
+  relabel_fewer_stops()
+
+# #location lat/long 
+# loc_lat_long <- readRDS(file.path("Output", "location_lat_long.rda")) %>%
+#   st_as_sf(coords = c('longitude', 'latitude'), crs=project_crs, remove = F) %>%
+#   st_transform(m_crs)  
+
+model_eval0 <- readRDS(file.path("Output", "model_eval.rda")) %>%
+  
+  # ONLY RELEVANT FOR THE TOTAL STOPS DESIGN: clarify the number of simulation visits, sites and total stops don't use relabel_fewer_stops() b/c this df doesn't have visits column
+  mutate(
+    sites = ifelse(grepl("stops", design), str_extract(version, " [0-9]{1,3}"), NA),
+    sites = as.numeric(gsub(" ", "", sites)),
+    visits = ifelse(grepl("stops", design), as.numeric(str_extract(version, "^[0-9]{1,2}")), NA),
+    total_stops = visits * sites,
+    # the actual max for this fewer total stops version
+    total_stops = ifelse(total_stops == 26*278, 7080, total_stops),
+    
+    version = ifelse(grepl("stops", design), as.character(total_stops), version)
+    )
+
+test_locations <- predictions0 %>%
+  filter(out_of_sample == "Test") %>% 
+  distinct(location) %>% pull()
+
+#location lat/long 
+loc_lat_long <- readRDS(file.path("Output", "location_lat_long.rda")) %>%
+  st_as_sf(coords = c('longitude', 'latitude'), crs=project_crs, remove = F) %>%
+  st_transform(m_crs) %>%
+  mutate(route = factor(route),
+         set = ifelse(location %in% test_locations, "Test Set", "Simulation Set")
+         )
+          
+# monitoring area shp 
+monitoring_region <- readRDS(file.path("..", "..", "1. Our Campaign", "Our Campaign R", "Data", "Output", "GIS", "monitoring_land_shp.rda")) %>%
+  st_transform(m_crs)
+
+# grid predictions
+grid_predictions0 <- readRDS(file.path("Output", "UK Predictions", "grid_predictions.rda"))  %>%
+  label_pollutant() %>%
+  # calculate summary statistics for each location across campaigns
+  group_by(location_id, longitude, latitude, spatial_temporal, design, version, variable) %>%
+  summarize(
+    prediction_median = median(prediction),
+    prediction_iqr = IQR(prediction)
+  ) %>%
+  # calculate median prediction difference relatie to full campaign prediction
+  group_by(variable, location_id) %>%
+  mutate(median_prediction_diff = prediction_median -  prediction_median[grepl("full", design)]) %>%
+  ungroup() %>%
+  
+  # ONLY RELEVANT FOR THE TOTAL STOPS DESIGN: clarify the number of simulation visits, sites and total stops don't use relabel_fewer_stops() b/c this df doesn't have visits column
+  mutate(
+    sites = ifelse(grepl("stops", design), str_extract(version, " [0-9]{1,3}"), NA),
+    sites = as.numeric(gsub(" ", "", sites)),
+    visits = ifelse(grepl("stops", design), as.numeric(str_extract(version, "^[0-9]{1,2}")), NA),
+    total_stops = visits * sites,
+    # the actual max for this fewer total stops version
+    total_stops = ifelse(total_stops == 26*278, 7080, total_stops),
+    
+    version = ifelse(grepl("stops", design), as.character(total_stops), version)
+    ) %>%
+  st_as_sf(coords = c("longitude", "latitude"), crs=project_crs,  remove = F)
+
+```
+
+```{r}
+# additional tables 
+## proportion of sites used in each distance buffer
+sites_used_geo_dist <- readRDS(file.path("Output", "SI", "sites_used_geo_dist.rda"))
+sites_used_pca_dist <- readRDS(file.path("Output", "SI", "sites_used_pca_dist.rda"))
+
+# UK-PLS modeling parameters
+modeling_parameters <- readRDS(file.path("Output", "full_model_parameters.rda"))
+
+```
+
+
+
+```{r}
+# calculates existing levels for numeric version options
+sort_num_lvs <- function(dt = model_eval0, design_name) {
+  lvls <- dt %>%
+    filter(design %in% design_name) %>% 
+    distinct(version) %>% pull() %>% 
+    #make sure order is correct
+    as.character() %>% as.numeric() %>% sort() %>% 
+    as.character()
+  
+  return(lvls)
+}
+
+```
+
+```{r}
+#unique(model_eval0$spatial_temporal)
+st_levels <- c("gold standard", "spatial temporal", "spatial", "temporal")
+
+design_levels <- c("full", 
+                   "fewer total stops",
+                   "balanced seasons", "fewer days", "fewer hours", 
+                   str_subset( unique(model_eval0$design), "distance")
+                   )
+
+version_levels <- c("all training data",
+                    sort_num_lvs(design_name =  c("fewer total stops", "balanced seasons"#,
+                                                  
+                                                  # this is "all training data" as well
+                                                  #str_subset( unique(model_eval0$design), "distance") 
+                                                  
+                                                  )),
+                    "business", "business & rush", "rush",
+                    unique(model_eval0$version[model_eval0$design == "fewer days"])
+                    ) %>%
+  unique()
+
+oos_lvls <- c("Test", "CV", "Spatial Clusters")
+
+```
+
+```{r}
+#fn orders factor levels
+add_lvls <- function(dt, spatial_temporal. = st_levels, design_levels. = design_levels, version_levels. = version_levels, oos_lvls. = oos_lvls) {
+  
+  dt %>%
+    mutate(
+      spatial_temporal = factor(spatial_temporal, levels = spatial_temporal.),
+      design = factor(design, levels = design_levels.),
+      version = factor(version, levels = version_levels.),
+      out_of_sample = factor(out_of_sample, levels = oos_lvls.)
+    )
+}
+
+```
+
+
+```{r}
+model_eval <- #add_lvls(model_eval0) %>%
+  model_eval0 %>%
+  mutate(
+    version = factor(version, levels = version_levels),
+    design = factor(design, levels = design_levels),
+    out_of_sample = factor(out_of_sample, levels = oos_lvls)
+  ) %>% 
+  label_pollutant()
+ 
+  
+geo_dist_ref <- sort_num_lvs(design_name =  str_subset(unique(model_eval0$design), "geographic"))[1]
+cov_dist_ref <- sort_num_lvs(design_name =  str_subset(unique(model_eval0$design), "covariate"))[1]
+
+normalized_model_eval <- model_eval %>%
+  pivot_longer( c("RMSE", contains("_R2")),names_to =  "model_eval", values_to = "value") %>%
+  #calculate normalized RMSE, using ___ value as denominator  
+  group_by(variable, model_eval, out_of_sample, reference) %>%  
+  mutate(
+    normalized_value = ifelse(!grepl("Spatial", out_of_sample), value/value[design == "full"], NA)
+    # normalized_value = ifelse( out_of_sample != "Buffered LOO", value/value[design == "full"] , #normalized_value
+    #                            ifelse(grepl("geographic", design), value/value[version== geo_dist_ref],
+    #                                   ifelse(grepl("covariate", design), value/value[version== cov_dist_ref], NA)
+    #                                   ))
+    )
+
+  
+sims <- sims0 %>%
+  mutate(
+    spatial_temporal = factor(spatial_temporal, levels = st_levels),
+      version = factor(version, levels = version_levels),
+      design = factor(design, levels = design_levels),
+      )
+
+
+## NOTE! The "visits", "sites", and "total_stops" columns are correct for cross-validated predictions in that they describes the simulation design used to generate the predictions. For fully ou-of-sample test sites, HOWEVER, these columns are meanigless. For example:   
+# predictions %>% group_by(design, version, out_of_sample) %>% summarize(unique_visits = paste(unique(visits), collapse = ", ")) %>% View()
+
+### --> Note the total # of stops is slighlty lower for the fewer total stops 24+ visits b/c some sites don't have that many visits
+
+predictions <- add_lvls(predictions0) %>%
+  label_pollutant() 
+
+# grid predictions
+grid_predictions <- grid_predictions0 %>%
+  mutate(
+    design = factor(str_to_title(design), levels = str_to_title(design_levels)),
+    version = factor(str_to_title(version), levels = str_to_title(version_levels))
+  ) 
+
+
+```
+
+```{r}
+# common vars
+
+var_names <- levels(predictions$variable)
+
+# for plots later
+design_list <- list(
+  #don't include extrapollation
+  str_subset(unique(model_eval$design), "distance|fewer total stops", negate = T),
+  # full & extrapollation
+  str_subset(unique(model_eval$design), "full|distance")  
+   )
+
+poster_text_size <- 25
+
+```
+
+
+# Stops used
+
+### --> add more?
+
+```{r}
+# of stops per site
+stops %>%
+  filter(variable==first(variable)) %>%
+  group_by(location) %>%
+  summarize(no_visits = n()) %>%
+  group_by(no_visits) %>%
+  summarize(sites = n()) %>%
+  mutate(visit_group = ifelse(no_visits < 26, "less than 26",
+                              ifelse(no_visits > 26, "more than 26", "26")
+                              )) %>%
+  group_by(visit_group) %>%
+  mutate(sites_in_visit_group = sum(sites)) %>%
+  kable(caption = "number of visits per site") %>% 
+  kable_styling()
+
+
+```
+
+
+# Simulation Descriptions
+
+
+
+
+
+
+range of times used for calculating annual averages; number of stops; check that temporal balance remains after dropping initial stops
+
+* avg # of visits is lower because only visits with all pollutant measures were used. Number varied for simulations w/ fewer random site visits.
+
+```{r}
+stops_visits <- predictions %>%
+  filter(grepl("stops", design)) %>%
+  arrange(sites, visits)
+  # mutate(
+  #   visits = as.numeric(str_extract(version, "^[0-9]{1,2}")),
+  #   sites = as.numeric(str_extract(version, " [0-9]{1,3}")),
+  #   sites = as.numeric(gsub(" ", "", sites)),
+  #   total_stops = sites*visits
+  #   )  
+
+
+sims %>%
+  group_by(spatial_temporal, design, version) %>%
+  summarize(
+    no_campaigns = max(campaign),
+    no_sites = length(unique(location)),
+    avg_visits_per_site = round(mean(visits))
+    ) %>% 
+  mutate(spatial_temporal = factor(spatial_temporal, levels = c("gold standard", "spatial temporal", "spatial", "temporal"))) %>%
+  arrange(spatial_temporal) %>% 
+  
+  group_by(spatial_temporal, design) %>%
+  summarize(
+    version = paste(unique(version), collapse = ", "),
+    no_sites = paste(unique(no_sites), collapse = ", "),
+    avg_visits_per_site = paste(unique(avg_visits_per_site), collapse = ", "),
+    #no_campaigns = unique(no_campaigns)
+  ) %>%  
+  mutate(
+    no_sites = ifelse(grepl("stops", design), "varies", no_sites),
+    avg_visits_per_site = ifelse(grepl("visits|stops", design), "varies", avg_visits_per_site),
+    
+    version = ifelse(design == "fewer total stops", paste0(paste(range(stops_visits$total_stops), collapse = "-") ," total stops, based on a varying number of sites (", paste(unique(stops_visits$sites), collapse = ", "), ") and visits ( ",  paste(unique(stops_visits$visits), collapse = ", "), ")"),  version)
+  ) %>%
+  
+  kable(caption = "Simulation Descriptions. The distance extrapollation analyses use the full campaign to conduct buffered LOO CV.", 
+        col.names = c("Design Type", "Design", "Versions", "Unique Sites", "Visits per Site"#, "No. Campaign Simulations"
+                      )
+        ) %>%
+  kable_styling() %>%
+  add_footnote(c("average visits per site for Designs: full",
+                 "the fewer site design versions can have different sites across simulations"
+                 ))
+  
+```
+
+
+* number of sites & monitor density
+
+
+```{r, eval=F}
+### --> redo w/ "fewer total stops" instead? 
+
+monitor_density_crosswalk <- model_eval %>%
+  filter(design %in% c("fewer sites", "full")) %>%
+  mutate(
+    version = ifelse(grepl("full", design), first(training_sites[design=="full"]), as.numeric(as.character(version) ))
+  ) %>%
+  distinct(version, training_monitors_per_100km2 = round(training_monitors_per_100km2)) %>%
+  arrange(version) 
+
+monitor_density_crosswalk %>%
+  kable(caption = "Monitoring density when using fewer sites", 
+        col.names = c("Total No. Sites", "Sites per 100 km2")
+          ) %>%
+  kable_styling()
+
+
+```
+
+
+
+
+
+# Map of Stops
+
+
+```{r}
+# create background map for grid/mapping
+#bbox <- st_bbox(act_shp)
+
+#make box little bigger than monitoring area
+bbox <- st_bbox(st_transform(st_buffer(loc_lat_long, 10000), project_crs) )
+
+names(bbox) <- c("left", "bottom", "right", "top")
+
+# background map
+map0 <- suppressMessages(get_stamenmap(bbox = bbox, zoom = 11, maptype = "terrain" )) %>%
+  # Make basic map image from the tiles
+  ggmap(ggmap = ., darken = c(0.5, "white")) + theme_void()
+
+## usage example: 
+# map0 + geom_point()
+
+```
+
+## main 
+
+* test set sites =31 (black dots)      
+* sites available for simulations = 278   
+
+```{r, fig.height=10}
+
+m1 <- map0 + 
+  #monitoring area
+  geom_sf(data = st_transform(monitoring_region, project_crs), inherit.aes = F, lwd = 0.1, alpha = 0.1, fill = "pink",
+          #aes(fill = "Monitoring\nArea")
+          ) + 
+  
+  #monitoring stops
+  geom_sf(data = st_transform(loc_lat_long, project_crs), aes(col = "Available\nfor Training"), inherit.aes = F, size=2) + 
+  
+  # test set - black dots
+  geom_sf(data = filter(st_transform(loc_lat_long, project_crs), grepl("Test", set)), inherit.aes = F, size=2, aes(col = "Test Set")) +
+  theme_bw() +
+  
+  theme(legend.justification=c(1,1), legend.position=c(1,1),
+        legend.background =  element_blank()
+        ) +
+  scale_color_manual(values = c("darkorchid1", "black")) +
+  
+  # add scale & N arrow to top rught
+    annotation_scale(location = "tl") +
+    annotation_scale(location = "tl", unit_category ="imperial", pad_y = unit(0.55, "cm")) +
+  annotation_north_arrow(location = "tl", pad_y = unit(0.5, "in"), style = north_arrow_fancy_orienteering) +
+  
+  #add attribution/reference to bottom left
+  geom_text(aes(x=-Inf, y=-Inf, hjust=-0.01, vjust=-0.5, label= "Map tiles by Stamen Design, under CC BY 3.0. \nData by OpenStreetMap, under ODbL."), size=3) +
+    
+  labs(x = "Longitude", y = "Latitude", col = "Site", fill="") 
+
+
+#add inset map 
+
+# example code: https://geocompr.github.io/post/2019/ggplot2-inset-maps/ 
+
+data("us_states", package = "spData")
+
+wa_map <- us_states %>%
+  filter(NAME == "Washington") %>%
+  #make sure this is in the same crs 
+  st_transform(project_crs)
+
+wa_centroid <- st_coordinates(st_centroid(wa_map))
+
+# #make bbox and sf object of a rectangular box 
+# bbox0 <- st_as_sfc(bbox) 
+
+inset_map <- ggplot() + 
+  geom_sf(data=wa_map, fill = "white", alpha=0.5) + 
+  geom_sf(data = monitoring_region, fill = "pink",
+          #reduce/eliminate outline
+          lwd = 0.1, alpha = 0.7,
+           ) +
+  theme_void() + 
+  #add "WA" label
+  geom_text(aes(x = wa_centroid[1], y = wa_centroid[2]),
+            label = "WA", size=4
+            )
+  
+# inset_map
+
+# use cowplot to layer both maps
+ggdraw() +
+  draw_plot(m1) +
+  draw_plot(inset_map, 
+            # The distance along a (0,1) x- or y- axis to draw the left/bottom edge of the plot
+            x = 0.65, y = 0.005, 
+            width = 0.23, height = 0.23)
+
+
+ggsave(file.path(image_path, "SI", "training_test_sites_map.png"), width = 7.5, height = 10)
+
+```
+
+
+-for poster
+
+```{r}
+m1b <- map0 + 
+  #monitoring area
+  geom_sf(data = st_transform(monitoring_region, project_crs), inherit.aes = F, lwd = 0.1, alpha = 0.1, fill = "pink",
+          #aes(fill = "Monitoring\nArea")
+          ) + 
+  
+  #monitoring stops
+  geom_sf(data = st_transform(loc_lat_long, project_crs), aes(col = "'Full Campaign'"), inherit.aes = F, size=2) + 
+  
+  # test set - black dots
+  geom_sf(data = filter(st_transform(loc_lat_long, project_crs), grepl("Test", set)), inherit.aes = F, size=2, aes(col = "Test")) +
+  theme_bw() +
+  
+  theme(legend.justification=c(1,1), legend.position=c(1,1),
+        legend.background =  element_blank(),
+        axis.text.x=element_blank(), axis.ticks.x=element_blank(), axis.title.x=element_blank(),
+        axis.text.y=element_blank(), axis.ticks.y=element_blank(), axis.title.y=element_blank(),
+        
+        legend.title=element_text(size=20),
+        legend.text=element_text(size=18)
+        
+        ) +
+  scale_color_manual(values = c("darkorchid1", "black")) +
+  
+  # add scale & N arrow to top rught
+    annotation_scale(location = "tl", 
+                     height = unit(0.5, "cm"), text_cex = 1
+                     ) +
+    annotation_scale(location = "tl", unit_category ="imperial", pad_y = unit(0.9, "cm"),
+                     height = unit(0.5, "cm"), text_cex = 1
+                     ) +
+  annotation_north_arrow(location = "tl", pad_y = unit(.9, "in"), style = north_arrow_fancy_orienteering, 
+                         height = unit(2.5, "cm"), width = unit(2.5, "cm")
+                         ) +
+  
+  #add attribution/reference to bottom left
+  geom_text(aes(x=-Inf, y=-Inf, hjust=-0.01, vjust=-0.5, label= "Map tiles by Stamen Design, under CC BY 3.0. \nData by OpenStreetMap, under ODbL."), size=4) +
+    
+  labs(#x = "Longitude", y = "Latitude", 
+       col="Site", fill="") 
+
+ 
+
+# use cowplot to layer both maps
+ggdraw() +
+  draw_plot(m1b) +
+  draw_plot(inset_map, x = 0.63, y = -0.03, 
+            width = 0.23, height = 0.23)
+
+ggsave(file.path(hei_image_path, "training_test_sites_map.png"), width = 6, height = 10)
+
+```
+
+
+
+
+
+# 2-min medians  
+
+```{r}
+stops %>% 
+  ggplot(aes(x=value)) + 
+  facet_wrap(~variable, scales = "free") + 
+  geom_histogram() 
+
+```
+
+```{r}
+
+stops %>%
+  label_pollutant() %>%
+  group_by(Pollutant = variable) %>%
+  summarize(
+    #N = n(), # N = 7327
+    #Min = min(value),
+    Q05 = quantile(value, 0.05),
+    Q25 = quantile(value, 0.25),
+    Median = median(value),
+    Mean = mean(value),
+    Q75 = quantile(value, 0.75),
+    Q95 = quantile(value, 0.95),
+    #Max = max(value),
+    #"Max/Min" = Max/Min
+    "Q95/Q05" = round(Q95/Q05, 1)
+  ) %>% 
+  mutate_at(vars(Q05:Q95), ~ ifelse(grepl("PM2.5", Pollutant), round(., 1), round(.))) %>%
+  mutate_at(vars(Q05:Q95), ~ format(., big.mark = ",")) %>%
+  
+  kable(caption = "Distribution of median stop concentrations. N = 7,327 total stops with measurements for all pollutants") %>%
+  kable_styling()
+  
+  
+
+
+```
+
+
+
+## ANOVA
+
+variability 
+
+value ~ location + season + day + hour
+
+```{r}
+
+
+#x = group_split(stops, variable)[[1]]
+
+anova1 <- mclapply(group_split(stops, variable), mc.cores = 4,  function(x) {
+  
+  temp <- anovaVCA(value ~ location + season + day + hour, Data = as.data.frame(x))$aov.tab  %>% 
+    tidy() %>%
+    select(factor = .rownames, percent = X.Total) %>% 
+    mutate(variable = first(x$variable))
+  }) %>%
+  bind_rows() %>% 
+  filter(factor != "total") %>%
+  mutate(
+    #factor = ifelse(grepl("tow2", factor), "day", factor),
+    factor = ifelse(factor == "location", "site", factor),
+    factor = factor(factor, levels = c("error", "site", "season", "day", "hour")),
+    kind = ifelse(grepl("site", factor), "spatial",
+                  ifelse(grepl("day|hour|season", factor), "temporal", "residual")
+                  ),
+    kind = factor(kind, levels = c("residual", "temporal", "spatial"))
+  ) %>%
+  label_pollutant()
+
+
+```
+
+```{r}
+
+print("Percent of pollutant variability explained by spatial and temporal factors. ANOVA models are for stop-level concentration values (2-min stop), such that: value ~ location (df=277) + season (df=3) + tow2 (df=1) + hour (df~19). The error term is the residual variability for any given site after adjusting for season, day of the week (weekend vs weekday) and hour of the day.")
+
+anova1 %>%
+  ggplot(aes(x=kind, y=percent, #col=factor, 
+             fill=factor)) + 
+  geom_bar(stat = "identity") + 
+  facet_grid(~variable, switch = "both") + 
+  labs(
+    y = "Percent (%)",
+    x = "Variability",
+    fill = ""
+  )
+
+ggsave(file.path(image_path, "SI", paste0("stop_level_anovas.png")), width = 9, height = 5)
+
+```
+
+
+```{r}
+anova1 %>%
+  group_by(variable, kind) %>%
+  summarize(percent = round(sum(percent))) %>%
+   #spread(variable, percent) %>% 
+  pivot_wider(names_from = variable, values_from = percent) %>%
+  kable(caption = "Percent of variability explained by pollutant models") %>%
+  kable_styling()
+  
+
+```
+
+
+
+# Annual averages 
+
+## estimates 
+
+distribution of annual averages from full campaign (n=278 sites)
+
+```{r}
+# table
+predictions %>%
+  filter(grepl("full", design),
+         grepl("campaign", reference)
+         ) %>% 
+  pivot_longer(c(prediction, estimate), names_to = "estimate_type", values_to = "value") %>%
+  group_by(Pollutant = variable, Type = estimate_type) %>%
+  summarize(
+    #N = n(), # N = 278
+    Q05 = quantile(value, 0.05),
+    Q25 = quantile(value, 0.25),
+    Median = median(value),
+    Mean = mean(value),
+    Q75 = quantile(value, 0.75),
+    Q95 = quantile(value, 0.95),
+    "Q95/Q05" = round(Q95/Q05, 1)
+  ) %>%
+  mutate_at(vars(Q05:Q95), ~ ifelse(grepl("PM2.5", Pollutant), round(., 1), round(.))) %>%
+  mutate_at(vars(Q05:Q95), ~ format(., big.mark = ",")) %>%
+  
+  kable(caption = "Distribution of annual average site estimates and model predictions from the full campaign. N = 278 sites for all pollutants.") %>%
+  kable_styling()
+  
+  
+```
+
+
+
+```{r}
+# plot 
+predictions %>%
+  filter(grepl("full", design),
+         grepl("campaign", reference)
+         ) %>%
+  ggplot(aes(x=estimate)) +
+  facet_wrap(~variable, scales="free") +
+  geom_histogram() +
+  labs(title = "Distribution of annual average site estimates")
+
+```
+
+annual average estimates for simulations 
+
+```{r, fig.height=10, fig.width=10}
+
+predictions %>%
+  filter(grepl("campaign", reference),
+          #don't include site-visits together
+         #!grepl("fewer total stops", design)
+         !grepl("stops", design)
+         ) %>%
+
+  group_by(design, version) %>%
+  mutate(avg_visits = round(mean(visits))) %>% 
+  
+  ggplot(aes(y=version, col=avg_visits, x=estimate)) + 
+  facet_grid(design~variable, scales="free", switch = "y", space = "free_y") + 
+  geom_boxplot() +
+  # reverse color
+  scale_color_continuous(low="#56B1F7", high="#132B43") +
+  
+  labs(col = "Avg Visits Per Site")
+
+```
+
+
+
+ 
+
+## predictions 
+
+```{r, fig.height=10}
+
+for(i in design_list) {
+#i = design_list[1] %>% unlist()
+
+  p <- predictions %>%
+  filter(design %in% unlist(i)) %>%  
+  
+  ggplot(aes(x = prediction,
+             y=version,
+             col = out_of_sample
+             ),
+         ) + 
+  facet_grid(design~variable, scales = "free", switch = "y" ) + 
+  geom_boxplot() +
+  labs(x = "Prediction",
+       col= "Out-of-Sample Set"
+        )
+  
+  print(p)
+  
+}
+
+```
+
+### correlations 
+
+```{r}
+temp0 <- predictions %>%
+  filter(reference == "gs_estimate",
+         out_of_sample == "CV",
+         # don't include buffered or sites/visits designs
+         !grepl("distance", design)
+         ) %>% #View()
+  select(location, campaign, design, version, spatial_temporal, variable, prediction, out_of_sample)#%>% 
+  #spread(variable, prediction) 
+
+temp_full <- temp0 %>%
+  filter(design == "full") %>%
+  rename(full_prediction = prediction) %>% 
+  select(location, variable, full_prediction)
+
+
+
+temp <- temp0 %>%
+  filter(!design == "full") %>% 
+  left_join(temp_full)  %>%
+  group_by(design, version, variable, 
+           campaign
+           ) %>%
+  summarize(
+    n = n(),
+    cor = cor(prediction, full_prediction)
+    ) %>%
+  mutate(
+    design = factor(str_to_title(design), levels = c(str_to_title(levels(temp0$design)))),
+    version = factor(str_to_title(version), levels = c(str_to_title(levels(temp0$version)))),
+    
+    #bin fewer total stops
+      version = ifelse(grepl("total stops", design, ignore.case = T), 
+                       as.character(cut(as.numeric(as.character(version)), breaks = seq(0,8000,1000), labels = c(seq(1000,7000,1000), 7080), dig.lab=5) ), 
+                       as.character(version))
+    
+    )
+
+
+```
+
+
+```{r}
+print("Correlations between cross-validated site predictions from the full campaign and other campaigns. Each boxplot represents 30 campaign correlations.")
+
+temp %>%
+  ggplot(aes(x=version, fill=variable,y=cor)) + 
+  facet_grid(cols = vars(design), rows = vars(variable),  scales = "free_x", switch = "both", 
+             #space = "free_x", 
+             ) +
+  #geom_point() +
+  # "good" correlation
+  geom_hline(yintercept = 0.9, linetype=2, alpha=0.6) +
+  # refernce for how many stops temporal designs have
+  geom_vline(xintercept = as.character(12*278), linetype=3, alpha=0.5) +
+  geom_boxplot() +
+  scale_x_discrete(guide = guide_axis(check.overlap = TRUE)) +
+  labs(fill = "Pollutant", x= "", y = "Correlation" )
+
+ggsave(file.path(image_path, "SI",  "design_vs_full_campaign_cors.png"), width = 12, height = 10)
+
+```
+
+
+
+
+### Predition vs GS Estimates
+
+ 
+```{r}
+# calc difference between full campaign and restricted sampling design predictions
+## looking at CV predictions
+
+prediction_diff <- predictions %>%
+  filter(
+    grepl("gs_", reference),
+    grepl("CV", out_of_sample, ignore.case = T),
+    !grepl("distance", design) #fewer sites & visits|
+  ) %>%
+  group_by(location, variable) %>% #View()
+  mutate( 
+    prediction_diff = prediction - estimate[design == "full"],
+    ) 
+
+```
+
+boxplots of error 
+
+
+```{r}
+
+prediction_diff %>%
+  group_by(variable, design, version) %>%
+  summarize(
+    qmin = quantile(prediction_diff, 0.05),
+    q25 = quantile(prediction_diff, 0.25),
+    median = median(prediction_diff),
+    q75 = quantile(prediction_diff, 0.75),
+    qmax = quantile(prediction_diff, 0.95),
+    ) %>%
+  mutate(version = ifelse(version == "business & rush", "business \n& rush", as.character(version)),
+         version = factor(str_to_title(version), levels = c(str_to_title(version_levels), "Business \n& Rush" )),
+         design = factor(str_to_title(design), levels = c("Full", "Fewer Total Stops", "Balanced Seasons", "Fewer Days", "Fewer Hours")),) %>% 
+
+  ggplot(aes(x=version, fill=variable)) +
+  facet_grid(cols = vars(design), rows = vars(variable), scales = "free", switch = "y") +
+  
+  #geom_boxplot(aes(y=prediction_diff)) +
+  geom_boxplot(aes(ymin = qmin, lower = q25, middle = median, upper = q75, ymax = qmax), stat = "identity", alpha=0.8) +
+  
+  geom_hline(yintercept = 0, linetype=2, alpha=0.5) +
+  
+  scale_x_discrete(guide = guide_axis(check.overlap = TRUE)) +
+
+  labs(fill = "Pollutant", x= "", y = "Prediction Error" )
+
+
+ggsave(file.path(image_path, "SI",  "site_prediction_diff.png"), width = 10, height = 10)
+
+```
+
+
+
+
+# Model Performances
+
+* pollutants were all modeled on the log scale, but evaluated on the native scale 
+
+
+
+```{r}
+model_eval %>%
+  filter(grepl("gs_", reference),
+         #only look at full campaign
+         grepl("full", design)
+         ) %>%  
+  select(out_of_sample, variable, RMSE, MSE_based_R2) %>%
+  arrange(desc(out_of_sample), variable) %>%
+  kable(caption = "Model performance of the full campaig. The 'GS' and 'simulated campaign' reference values are the same here.", digits = 2) %>%
+  kable_styling()
+
+```
+
+
+
+
+
+## Scatter plots
+
+### full campaign 
+
+* high concentration sites tend to be underpredicted, especially PNCs
+
+scatterplot of full campaign 
+
+```{r, fig.height=10}
+# compare GS estimest vs campaign predictions at test set (used below in RMSE, etc.) 
+t0 <- model_eval %>%
+  filter(grepl("gs_", reference),
+         #only look at full campaign
+         grepl("full", design)
+         ) %>%  
+  select(out_of_sample, variable, RMSE, MSE_based_R2) %>% 
+  mutate(
+    MSE_based_R2 = format(round(MSE_based_R2, 2), nsmall = 2),
+    RMSE = #ifelse(grepl("PM2.5|NO2", variable), round(RMSE,1), round(RMSE) )
+            ifelse(RMSE <10, round(RMSE, 1), round(RMSE))
+            ) %>% 
+  
+  
+  group_by(variable) %>%
+  summarize(label = paste0("CV: RMSE = ", RMSE[1], ", ","R2 = ", MSE_based_R2[1] , "\n",
+                          "Test: RMSE = ", RMSE[2], ", ","R2 = ", MSE_based_R2[2]
+                   )
+            )
+
+
+predictions %>%
+  filter(grepl("gs_", reference),
+         #only look at full campaign
+         grepl("full", design)
+         ) %>%
+  
+    ggplot(., aes(x=estimate, y=prediction, col=out_of_sample)) +
+      facet_wrap_equal(~variable, scales="free") +
+      theme(aspect.ratio=1) +
+      geom_point(alpha=0.4) +
+      geom_smooth(se=F, method = "lm") +
+      
+      #geom_text(data= t0, aes(x=-Inf, y=Inf, label=label), hjust=0, vjust=1.1, size=3, inherit.aes = F) +
+  geom_text(data= t0, aes(x=Inf, y=-Inf, label=label), size=3, inherit.aes = F,
+            hjust=1, vjust=-0.1 ) +
+  
+      geom_abline(slope = 1, intercept = 0, linetype=2, alpha=0.5) +
+      geom_label(inherit.aes = F, aes(x=Inf, y=Inf),  hjust = 1, vjust=1, label="1:1", size=3) +
+      
+      geom_abline(slope = c(1.25, 0.75), intercept = 0, linetype=2, alpha=0.5) +
+
+      # geom_label_npc(inherit.aes = F, aes(npcx=0.75, npcy=Inf, label = "+25%"), size=3) +
+      # geom_label_npc(inherit.aes = F, aes(npcx=Inf, npcy=0.75, label = "-25%"), size=3) +
+  
+  labs(col = "Out-of-Sample") 
+
+
+ggsave(file.path(image_path, "SI", "gs_scatterplot.png"), width = 9, height = 7)
+
+```
+
+
+## different validation approaches
+
+```{r}
+# RMSE, scales= "free"
+p1 <- model_eval  %>%
+  filter(grepl("Spatial|CV", out_of_sample),
+         grepl("full|distance", design),
+         reference == "gs_estimate"
+         ) %>%
+  mutate(
+    design = ifelse(design == "full", "Random",
+                    ifelse(grepl("PCA", design), "Spatially Clustered\nby PCA distance", "Spatially Clustered\nby Geographic\nDistance (m)" ))
+    ) %>%
+  ggplot(aes(x="", y=RMSE, col=design)) +
+  facet_wrap(~variable, scales="free",
+             nrow = 1) +
+  geom_point() +
+  labs(col = "Cross-Validation\nApproach",
+       x=""
+       )
+
+# R2
+p2 <- model_eval  %>%
+  filter(grepl("Spatial|CV", out_of_sample),
+         grepl("full|distance", design),
+         reference == "gs_estimate"
+         ) %>%
+  mutate(
+    design = ifelse(design == "full", "Random",
+                    ifelse(grepl("PCA", design), "Spatially Clustered\nby PCA distance", "Spatially Clustered\nby Geographic\nDistance (m)" ))
+    ) %>%
+  ggplot(aes(x="", y=MSE_based_R2, col=design)) +
+  facet_wrap(~variable,  
+             nrow = 1) +
+  geom_point() +
+  labs(col = "Cross-Validation\nApproach",
+       x="",
+       y = "MSE-based R2"
+       )
+
+print("Out-of-spatial-cluster prediction error by monitor-prediction distance")
+ggarrange(plotlist = list(p1, p2), common.legend = T, legend = "bottom"#, ncol = 2 
+                    )  
+```
+
+
+```{r}
+# predictions %>%
+
+pca_cluster_dist <- readRDS(file.path("Output", "pca_cluster.rda")) %>%
+  mutate(design = "PCA distance") 
+geo_cluster_dist <- readRDS(file.path("Output", "spatial_cluster.rda")) %>%
+  mutate(design = "Geographic distance (m)") 
+
+rbind(pca_cluster_dist, geo_cluster_dist) %>%
+  group_by(design) %>%
+  summarize(
+    min = min(min_train_to_pred_dist),
+    q25 = quantile(min_train_to_pred_dist, 0.25),
+    mean = mean(min_train_to_pred_dist),
+    median = median(min_train_to_pred_dist),
+    sd = sd(min_train_to_pred_dist),
+    q75 = quantile(min_train_to_pred_dist, 0.75),
+    max = max(min_train_to_pred_dist)
+    ) %>%
+  mutate_if(is.numeric, ~round(., 0)
+            #~ifelse(grepl("Geographic", design), round(.), round(.,2) )
+            ) %>%
+  kable(caption = "Distribution of distances between an out-of-cluster prediction site and the nearest in-cluster monitoring site", format.args = list(big.mark=',')) %>%
+  kable_styling()
+
+```
+
+
+## Design performances 
+
+
+### Non-normalized Boxplots 
+
+* vertical line is the model performance of the "full" campaign (n=278 sites x ~ 26 visits/site) 
+
+```{r, fig.height=10}
+full_campaign <- model_eval %>%
+  filter(grepl("gs_", reference),
+         grepl("full", design),
+         ) %>%
+  distinct(#mean_min_train_to_pred_dist_km, training_monitors_per_100km2, 
+           out_of_sample, variable, reference, RMSE, MSE_based_R2 
+           )
+
+
+eval_cols <- c("RMSE", "MSE_based_R2")
+
+```
+
+
+
+non-normalized boxplots  
+  * using gold standard observations as a reference 
+
+```{r}
+model_eval %>%
+    filter(grepl("gs_", reference),
+           !grepl("full|distance", design) #|fewer sites|fewer visits
+            ) %>% 
+    mutate(
+      version = factor(str_to_title(version), levels = c(str_to_title(version_levels), "Business \n& Rush" )),
+      design = factor(str_to_title(design), levels = c("Full", "Fewer Total Stops", "Balanced Seasons", "Fewer Days", "Fewer Hours")),
+      
+      total_stops2 = cut(total_stops, breaks = seq(0,8000,1000), labels = c(seq(1000,7000,1000), 7080)
+                         )
+      
+    ) %>% 
+  group_by(total_stops2) %>%
+  summarize(
+    min = min(total_stops),
+    max = max(total_stops),
+    unique = paste(sort(unique(total_stops)), collapse = ", ")
+  ) %>%
+  kable(caption = "Total number of stops in each bin") %>%
+  kable_styling()
+
+```
+
+
+
+```{r}
+for (i in seq_along(eval_cols[1:2])) {
+  # i=2
+  p <- model_eval %>%
+    filter(grepl("gs_", reference),
+           !grepl("full|distance", design)
+            ) %>% 
+    mutate(
+      version = factor(str_to_title(version), levels = c(str_to_title(version_levels), "Business \n& Rush" )),
+      design = factor(str_to_title(design), levels = c("Full", "Fewer Total Stops", "Balanced Seasons", "Fewer Days", "Fewer Hours")),
+      
+      #bin fewer total stops
+      version = ifelse(grepl("total stops", design, ignore.case = T), 
+                       as.character(cut(total_stops, breaks = seq(0,8000,1000), labels = c(seq(1000,7000,1000), 7080),  dig.lab=5,)), 
+                       as.character(version))
+    ) %>% 
+    
+    ggplot(aes(x = !!as.symbol(eval_cols[i]), y=version, col = out_of_sample)) + 
+    facet_grid(design~variable, scales = "free", switch = "y", space = "free_y"
+               ) + 
+    geom_boxplot() +
+    geom_vline(data=full_campaign, aes(xintercept=!!as.symbol(eval_cols[i]), col = out_of_sample)) +
+    labs(col = "Out-of-Sample Set")
+  
+  
+  print(p)
+  
+  ggsave(file.path(image_path, "SI", paste0("model_eval_", str_extract(eval_cols[i], "RMSE|R2"), ".png")),
+         width = 9, height = 11)
+  
+}
+ 
+```
+
+### Spatial-Temporal Designs (sites x vistis)
+
+
+```{r}
+site_visit_summary0 <- normalized_model_eval %>%
+  filter(
+    grepl("CV", out_of_sample),
+    grepl("fewer total stops", design),
+    #don't use regression-based R2
+    #grepl("gs_", reference)
+    ) %>%
+  # # separate version
+  # separate(version, c("visits", "sites"), sep = " ", remove=F) %>%
+  mutate(
+    # visits = gsub("_.*", "", visits),
+    # sites = gsub("_.*", "", sites),
+    # #reorganize
+    # visits = factor(visits, sort(as.numeric(unique(visits)) )),
+    # sites = factor(sites, sort(as.numeric(unique(sites)) )),
+    # total_stops = as.numeric(as.character(sites)) * as.numeric(as.character(visits)),
+    model_eval = gsub("MSE_based_", "", paste("Normalized", model_eval)),
+    )  
+
+site_visit_summary <- site_visit_summary0 %>%
+  group_by(design, visits, sites, total_stops, variable, model_eval, reference) %>%
+  summarize(
+    no_sims = n(),
+    median_value = round(median(normalized_value), 2),
+    iqr_value = IQR(normalized_value)
+  )  
+
+```
+
+Mean R2, RMSE for visits x sites, by reference estimate used
+
+```{r}
+
+print("Mean normalized MSE-based R2 and RMSE by number of total stops in a campaign. Prediction performance parameters are calculated using either the full campaign or the simulated campaign estimates. Mean performance parameters are each based on 30 campaign simulations.")
+
+#plot_vars <- c("gs_estimate", "campaign_estimate")
+plot_vars <- c("R2", "RMSE")
+
+for (i in plot_vars) {
+  # i = "R2" # i = "RMSE"
+  
+  # reference lines
+  if(grepl("R2", i)) {
+    hline <- 0.85
+  } else {
+      hline <- 1.15
+      }
+  
+  temp <- site_visit_summary %>%
+    filter(#grepl(i, reference)
+           grepl(i, model_eval)
+           ) %>%
+    mutate(sites = as.numeric(as.character(sites)),
+           visits = factor(as.character(visits), levels = unique(site_visit_summary$visits)),
+           reference = ifelse(grepl("gs_", reference), "Full Campaign Est", "Simulated Campaign Est"),
+           reference = paste("Reference: ", reference)
+           ) 
+    
+    p <- ggplot(data=temp, aes(y=median_value, x=total_stops, col=sites, 
+               shape=visits
+               )) +
+      facet_grid(cols = vars(variable), rows=vars(reference), switch = "y", scales = "free",) +
+      geom_hline(yintercept = hline, alpha=0.5, linetype=2) +
+      #geom_line(stat="smooth", aes(group=reference), se=F, alpha=0.5, size=1, show.legend = F) +
+      
+      #geom_line(stat="smooth", aes(group=sites), se=F, alpha=0.65, size=0.5,) +
+      
+      geom_point(alpha=0.9) +
+      # make higher site counts darker
+      scale_color_continuous(high = "#132B43", low = "#56B1F7") +
+      
+      scale_shape_manual(values=1:length(unique(site_visit_summary$visits))) +
+      labs(x = "Total Stops", y = paste("Median Normalized", i), col = "Sites", shape = "Visits per Site")
+    
+    print(p)
+  
+  # save images. RMSE will go in the SI
+  if(grepl("RMSE", i)) {
+    p_image_path = file.path(image_path, "SI")
+    } else{
+      p_image_path = image_path
+      }
+  
+  ggsave(file.path(p_image_path, paste0("total_stops_performance_",i, ".png")), width = 7, height = 8)
+  
+  # #save exmple with just PNC using the gold standared reference
+  # p %+% filter(temp,
+  #               grepl("Full", reference),
+  #               grepl("PNC", variable)
+  #               ) %>%
+  #   print()
+  # 
+  # ggsave(file.path(image_path, "SI", paste0("total_stops_performance_pnc_",i, ".png")), width = 7, height = 8)
+  
+}
+
+```
+
+-for poster 
+
+```{r}
+i = "R2" 
+hline <- 0.85 
+
+temp <- site_visit_summary %>%
+  filter(grepl(i, model_eval),
+         grepl("gs_", reference),
+         !grepl("CO2", variable)
+         ) %>%
+  mutate(sites = as.numeric(as.character(sites)),
+         visits = factor(as.character(visits), levels = unique(site_visit_summary$visits)),
+         reference = ifelse(grepl("gs_", reference), "Full~Campaign~Est", "Simulated Campaign Est"),
+         reference = paste("Reference: ", reference),
+         
+         total_stops = total_stops/1000
+         ) #%>% make_pollutant_expression("variable")
+    
+p <- ggplot(data=temp, aes(y=median_value, x=total_stops, col=sites, shape=visits, size=1.5)) +
+  facet_grid(cols = vars(variable), rows=vars(reference), switch = "y", scales = "free", labeller = label_parsed) +
+  #geom_hline(yintercept = hline, alpha=0.5, linetype=2) +
+  geom_point(alpha=0.9) +
+  # make higher site counts darker
+  scale_color_continuous(high = "#132B43", low = "#56B1F7") +
+  scale_shape_manual(values=1:length(unique(site_visit_summary$visits))) +
+  theme(text = element_text(size=poster_text_size-2)) +
+  guides(size = "none",
+         shape = guide_legend(override.aes = list(size = 5))
+          ) +
+  labs(x = "Total Stops (Thousands)", 
+       #y = paste("Median Normalized", i), 
+       y = expression(Median~R[Normalized]^2),
+       
+       col = "Sites", shape = "Visits per Site")
+
+print(p)
+  
+ggsave(file.path(hei_image_path, paste0("total_stops_performance_",i, ".png")), width = 12, height = 8)
+  
+
+```
+
+
+same as above, but plotting the IQR (vs mean) of R2, RMSE across 30 campaigs  
+
+
+```{r}
+
+p_image_path = file.path(image_path, "SI")
+
+lapply(plot_vars, function (x) {
+  p <- site_visit_summary %>%
+    filter(grepl(x, model_eval)) %>%
+    mutate(sites = as.numeric(as.character(sites)), 
+           visits = factor(as.character(visits), levels = unique(site_visit_summary$visits)),
+           reference = ifelse(grepl("gs_", reference), "Full Campaign Est", "Simulated Campaign Est"),
+           reference = paste("Reference: ", reference)
+           ) %>%
+    
+    ggplot(aes(y=iqr_value, x=total_stops, col=sites, shape=visits)) +
+    facet_grid(cols = vars(variable), rows=vars(reference), switch = "y") +
+    #geom_line(stat="smooth", aes(group=sites), se=F, alpha=0.65, size=0.5) +
+    geom_point(alpha=0.9) + 
+    scale_color_continuous(high = "#132B43", low = "#56B1F7") +
+    scale_shape_manual(values=1:length(unique(site_visit_summary$visits))) +
+    labs(x = "Total Stops", y = paste("IQR of Normalized", x), col = "Sites", shape = "Visits per Site")
+  }) %>%
+  ggarrange(plotlist = ., common.legend = T, legend = "bottom")
+
+ggsave(file.path(p_image_path, paste0("total_stops_performance_sd.png")), width = 15, height = 8)
+
+```
+
+
+sites x visit ranges needed to reach normalized R2=0.85
+
+```{r}
+decent_value <- 0.85
+buffer_value <- 0.03
+low_value <- decent_value - buffer_value
+high_value <- decent_value + buffer_value
+
+site_visit_summary %>%
+  filter(
+    grepl("total stops", design),
+    grepl("gs_", reference),
+    model_eval == "Normalized R2",
+     median_value >= low_value & median_value <= high_value
+    ) %>%
+  group_by(variable) %>% #View()
+  summarize(
+    total_stops = paste(range(total_stops), collapse = "-"),
+    sites = paste(range(sites), collapse = "-"),
+    visits = paste(range(visits), collapse = "-"),
+  ) %>%
+  kable(caption = paste0("Total campaign stops associated with median normalized R2 values between ", low_value, "-", high_value ),
+        col.names =  c("Pollutant", "Total Stops", "Sites", "Visits per Site")
+          ) %>%
+  kable_styling()
+
+
+```
+
+
+### Temporal Designs
+
+lines connecting the median (IQR) normalized value vs GS estimates only
+  * using random CV predictions   
+  * the denominator (normalizer) is the full campaign performance   
+* both references: GS and campaign estimates
+
+```{r}
+# 12 visit mean performance ref
+temp <- site_visit_summary %>%
+  ungroup() %>%
+  filter(sites=="278", visits == "12", reference == "gs_estimate") %>%
+  rename(normalized_value = median_value) %>%
+  select(-c(design))
+
+```
+
+```{r}
+p <- normalized_model_eval %>%
+  filter(#grepl("gs_", reference),
+         !grepl("distance|fewer total stops", design),
+         !grepl("full", design),
+         grepl("CV", out_of_sample)
+         ) %>%  
+  # #calculate normalized RMSE, using ___ value as denominator  
+  mutate(model_eval = ifelse(grepl("RMSE", model_eval), "Normalized RMSE", "Normalized R2" ),
+         version = ifelse(version == "business & rush", "business \n& rush", as.character(version)),
+         version = factor(version, levels = c(version_levels, "business \n& rush" )),
+          version = str_to_title(version),
+         design = str_to_title(design),
+         reference = ifelse(grepl("gs_", reference), "Full\nCampaign\nEst", "Simulated\nCampaign\nEst")
+         ) %>% 
+
+  ggplot(aes(y = normalized_value, x=version, col = variable, fill=variable, #group=variable,
+             group= interaction( variable, reference),
+             linetype = reference
+             )) + 
+  facet_grid(cols = vars(design), rows = vars(model_eval), scales = "free", switch = "y") +
+  geom_smooth(stat = 'summary', fun.data = median_hilow, fun.args = list(conf.int = 0.5), alpha = 0.2) + 
+  
+  geom_hline(data=temp, aes(yintercept=normalized_value, col=variable), linetype=3, alpha=1) +
+
+  labs(col = "Pollutant", fill = "Pollutant", x= "", y = "", linetype = "Reference")
+
+print(p)
+
+ggsave(file.path(image_path, paste0("campaign_estimates_model_eval2_.png")), width = 10, height = 6)
+
+```
+
+-for poster
+
+```{r}
+
+p <- normalized_model_eval %>%
+  filter(!grepl("distance|fewer total stops", design),
+         !grepl("full", design),
+         grepl("CV", out_of_sample),
+         grepl("R2", model_eval),
+         !grepl("CO2", variable)
+         ) %>%  
+  # #calculate normalized RMSE, using ___ value as denominator  
+  mutate(model_eval = ifelse(grepl("RMSE", model_eval), "Normalized RMSE", "Normalized R2" ),
+         version = ifelse(version == "business & rush", "business \n& rush", as.character(version)),
+         version = factor(version, levels = c(version_levels, "business \n& rush" )),
+          version = str_to_title(version),
+         design = str_to_title(design),
+         reference = ifelse(grepl("gs_", reference), "True Estimate (Full Campaign)", "Simulation Estimate"),
+         
+         reference = factor(reference, levels = c("True Estimate (Full Campaign)", "Simulation Estimate") )
+         ) %>% 
+    #make_pollutant_expression(var = "variable") %>% 
+
+  ggplot(aes(y = normalized_value, x=version, col = variable, fill=variable, #group=variable,
+             group= interaction( variable, reference),
+             linetype = reference
+             )) + 
+  facet_grid(cols = vars(design), scales = "free", switch = "y",) +
+  geom_smooth(stat = 'summary', fun.data = median_hilow, fun.args = list(conf.int = 0.5), alpha = 0.2) + 
+  
+  geom_hline(data=filter(temp, grepl("R2", model_eval), !grepl("CO2", variable)), aes(yintercept=normalized_value, col=variable), linetype=3, alpha=1) +
+  theme(text = element_text(size=poster_text_size),
+        legend.box = "vertical", 
+        legend.box.just = c("left")
+         
+        #legend.justification = "left"
+        ) +
+  # guides(color = guide_legend(nrow = 3)#,
+  #         ) +
+  labs(col = "Pollutant", fill = "Pollutant", x= "",
+       y = expression(R[Normalized]^2),
+       linetype = "Reference")
+
+print(p)
+
+ggsave(file.path(hei_image_path, paste0("campaign_estimates_model_eval2_.png")), width = 14, height = 9)
+
+```
+
+
+
+# Maps 
+
+
+Disc: “You can produce very different results at prediction locations of interest with restricted sampling designs. Others have reported similar findings.(Hatzopoulou et al., 2017; Saha et al., 2019)  
+
+```{r}
+   
+# relabel designs & select a subset of the designs to plot 
+df0 <- grid_predictions %>%
+  # calculate the median prediction error for any givens site
+  
+  
+mutate(
+      design = ifelse(design == "Full", "Full Campaign",
+                       ifelse(design == "Fewer Total Stops", paste0(version, " Stops"),
+                              ifelse(design == "Balanced Seasons", paste0(version, " Season"),
+                                     ifelse(design == "Fewer Days", as.character(version), 
+                                            ifelse(design == "Fewer Hours", paste0(version, " Hours"), NA
+                                                   ))))),
+      design = factor(design, levels = c("1 Season",  "2 Season",  "Weekday", "Rush Hours", "Business Hours","1000 Stops", "3000 Stops",  "Full Campaign"))) %>%
+    
+    #for now..
+    filter(!design %in% c("1 Season", "Weekday", "1000 Stops"))
+
+
+```
+
+
+```{r}
+# fn returns maps of the grid predictions. Each pollutant has its own legend.
+
+# dt = df0 %>%
+#   filter(grepl("Full", design),
+#          grepl("PNC", variable),
+#          )
+# var = "prediction_median"
+# name="Conc."
+# x= "PNC (pt/cm3)"
+
+map_predictions <- function(dt, var = "prediction_median", map_type="", new_text_size="", var_names.=var_names, ...) {
+  
+  dt <- rename(dt, value = all_of(var))
+  
+  prediction_maps <- lapply(var_names., function(x) {
+    
+    p <- filter(dt, variable == x) %>%
+      ggplot() +
+      
+      geom_sf(aes(col=value), 
+              #settings for poster
+              alpha=0.6,shape=15,
+              # settings for SI
+              #alpha=0.8, size=1, 
+              ) +
+      
+      #geom_raster(data=arrange(filter(dt, variable == x), longitude, latitude), aes(fill=value, x=longitude, y=latitude), interpolate = T, inherit.aes = F)+
+
+      # monitoring outline
+      geom_sf(data = monitoring_region, alpha=0, size=0.1) +
+      
+      scale_colour_gradient(low = "yellow", high = "red", ...) +
+      #scale_fill_gradient(low = "yellow", high = "red", ...) +
+
+      facet_grid(cols = vars(variable), rows = vars(design), switch = "y")  +
+      theme_void() +
+      theme(legend.justification=c(0,1), 
+            legend.position = c(1,.9)
+            )
+    
+    #remove labels from 2+ columns
+    if(!grepl("PNC", x)) {
+      p <- p + theme(strip.background.y = element_blank(), strip.text.y = element_blank())
+      }
+    
+    if(map_type=="prediction_difference") {
+      p <- p + scale_colour_gradient2(low = "#56B1F7", high = "red", ...) +
+        theme(strip.background.x = element_blank(), strip.text.x = element_blank(),
+              legend.position = c(1,1)
+              ) 
+        
+      }
+    
+     if(new_text_size !=""){
+       p <- p + theme(text = element_text(size=new_text_size))
+     }
+    
+    print(p)
+    
+    })
+  
+  prediction_maps %>% 
+    ggarrange(plotlist = ., ncol = length(var_names.)) 
+
+}
+
+
+ # df0 %>%
+ #  filter(grepl("Full", design),
+ #         !grepl("CO2", variable)
+ #         ) %>% #View()
+ #  map_predictions(., var = "prediction_median", name="Conc", new_text_size=poster_text_size*reduce_size, var_names. = str_subset(var_names, "CO2", negate = T))  
+ 
+```
+ 
+
+## Main
+
+```{r, fig.show='hide'}
+
+# Full campaign site predictions
+full_map <- df0 %>%
+  filter(grepl("Full", design)) %>%
+  mutate(design = "Full Campaign\n7,000 Stops") %>%
+  map_predictions(., var = "prediction_median", name="Prediction")
+
+# Median site prediction difference relative to the full campaign 
+difference_map <- df0 %>%
+  filter(!grepl("Full", design)) %>%
+  
+  mutate(
+    design = ifelse(design == "3000 Stops", "3,000 Stops",
+                    ifelse(design == "2 Season", "3,000 Stops\nDuring 2 Season",
+                           ifelse(design == "Business Hours", "3,000 Stops\nDuring Business Hrs",
+                                  ifelse(design == "Rush Hours", "3,000 Stops\nDuring Rush Hrs", NA
+                           )))),
+    design = relevel(factor(design), ref = "3,000 Stops"),
+  ) %>%
+  
+  map_predictions(., var = "median_prediction_diff", map_type = "prediction_difference", name="Difference")  
+
+```
+
+```{r}
+print("Comparison of the full campaign exposure surface (top) and the median prediction difference for some example monitoring designs.")
+
+ggarrange(full_map, difference_map, ncol = 1, heights = c(1,4))
+
+ggsave(file.path(image_path, paste0("maps_of_prediction_diff.png")),  height = 12, width = 12)
+
+```
+
+## SI 
+
+```{r, fig.show='hide'}
+
+# map the IQR of the predictions
+print("IQR of site predictions following different sampling designs. Larger values indicate larger degrees of variability for any given location across all simulated campaigns.")
+
+iqr_map <- df0 %>%
+  # the full design has 1 sim and so IQR=0
+  filter(!grepl("Full", design)) %>%
+  mutate(
+    design = ifelse(design == "3000 Stops", "3,000 Stops",
+                    ifelse(design == "2 Season", "3,000 Stops\nDuring 2 Season",
+                           ifelse(design == "Business Hours", "3,000 Stops\nDuring Business Hrs",
+                                  ifelse(design == "Rush Hours", "3,000 Stops\nDuring Rush Hrs", NA
+                           )))),
+    design = relevel(factor(design), ref = "3,000 Stops"),
+  ) %>%
+  
+  map_predictions(., var = "prediction_iqr", name="IQR")
+
+
+```
+
+```{r}
+ggarrange(full_map, iqr_map, ncol = 1, heights = c(1,4))
+
+ggsave(file.path(image_path, "SI", paste0("maps_of_prediction_iqr.png")),  height = 12, width = 12)
+
+```
+
+-for poster
+
+```{r, fig.show='hide'}
+reduce_size <- 0.88
+
+full_map_b <- df0 %>%
+  filter(grepl("Full", design),
+         !grepl("CO2", variable)
+         ) %>% #View()
+  #test
+  mutate(
+    design = "Full Campaign\n7k stops\nMost Hours"
+  ) %>%
+  
+  map_predictions(., var = "prediction_median", name="Conc", new_text_size=poster_text_size*reduce_size, var_names. = str_subset(var_names, "CO2", negate = T))  
+  
+# Median site prediction difference relative to the full campaign 
+difference_map_b <- df0 %>%
+  filter(!grepl("Full", design),
+         !grepl("CO2", variable)
+         ) %>%
+  mutate(
+    design = case_when(
+      design == "3000 Stops" ~ "Subsample\n3k Stops\n",
+      design == "Business Hours" ~ "Subsample\n3k Stops\nBusiness Hours",
+      design == "Rush Hours" ~ "Subsample\n3k Stops\nRush Hours",
+      design == "2 Season" ~ "Subsample\n3k Stops\n2 Seasons",
+    )
+  ) %>%
+  map_predictions(., var = "median_prediction_diff", map_type = "prediction_difference", name="Diff", new_text_size=poster_text_size*reduce_size, var_names. = str_subset(var_names, "CO2", negate = T))  
+
+```
+
+```{r}
+print("Comparison of the full campaign exposure surface (top) and the median prediction difference for some example monitoring designs.")
+
+ggarrange(full_map_b, difference_map_b, ncol = 1, heights = c(1,4))
+    
+ggsave(file.path(hei_image_path, "maps_of_prediction_diff.png"),  height = 20, width = 14)
+
+```
+
+
+
+## abstract art 
+
+```{r}
+addSmallLegend <- function(myPlot, pointSize = 1, textSize = 5, spaceLegend = 0.1) {
+    myPlot +
+        guides(shape = guide_legend(override.aes = list(size = pointSize)),
+               color = guide_legend(override.aes = list(size = pointSize),
+                                    title.position = "top") #, 
+               # fill = guide_colourbar(
+               #   override.aes = list(size = pointSize)
+               #   #barwidth = 0.5#, barheight = 10
+               # )
+               ) +
+        theme(legend.title = element_text(size = textSize), 
+              legend.text  = element_text(size = textSize),
+              legend.key.size = unit(spaceLegend, "lines")
+              )
+}
+
+# addSmallLegend(pnc_full_map)
+
+```
+
+
+```{r}
+fig_factor <- 1
+fig_w <- 3.25*fig_factor
+fig_h <- 1.75*fig_factor
+
+conc_factor <- 1000
+text_size <- 4 #0.5
+pt_size <- 0.8
+alpha_val <- 0.4
+
+pnc_full_map <- df0 %>%
+  filter(grepl("Full", design),
+         grepl("PNC", variable),
+         ) %>%
+  mutate(
+    prediction_median = prediction_median/conc_factor,
+    design = "7,000 Stops\nYear-Around\n7 Dys/Wk\nMost Hours"
+    ) %>%
+   ggplot() +
+      geom_sf(aes(col=prediction_median), alpha=alpha_val, size=pt_size) +
+      # monitoring outline
+      geom_sf(data = monitoring_region, alpha=0, size=0.1) +
+      scale_colour_gradient(low = "yellow", high = "red", name="PNC Prediction\n(10k pt/cm3)") +
+      facet_wrap(~design)  +
+  theme_void() + 
+  theme(
+    # legend.title = element_text( size=text_size),
+    # legend.text=element_text(size=text_size),
+    legend.position = "bottom",
+    strip.text.x = element_text(size = text_size),
+    plot.title = element_text(hjust = 0.5, 
+                              size = 6
+                              )
+    ) + 
+  
+  labs(
+    title = "Full Campaign"
+    )  
+
+# pnc_full_map 
+pnc_full_map <- addSmallLegend(pnc_full_map)
+
+pnc_sample_maps <- df0 %>%
+  filter(!grepl("Full", design),
+         grepl("PNC", variable),
+         ) %>% #st_drop_geometry() %>% distinct(design)
+  mutate(
+    design = ifelse(design == "3000 Stops", "3000 Stops",
+                    ifelse(design == "2 Season", "3000 Stops\nDuring\n2 Season\n",
+                           ifelse(design == "Business Hours", "3000 Stops\nDuring\nBusiness Hrs",
+                                  ifelse(design == "Rush Hours", "3000 Stops\nDuring\nRush Hrs", NA
+                           )))),
+    
+    design = relevel(factor(design), ref = "3000 Stops"),
+    
+    median_prediction_diff = median_prediction_diff/conc_factor
+  ) %>%
+  ggplot() +
+  geom_sf(aes(col=median_prediction_diff), alpha=alpha_val, size=pt_size/2) +
+  
+  # monitoring outline
+  geom_sf(data = monitoring_region, alpha=0, size=0.1) +
+  
+  scale_colour_gradient2(low = "#56B1F7", high = "red", name="Difference")+
+      facet_wrap(~design, nrow = 1
+                 )  +
+      theme_void() + 
+  theme(
+    # legend.title = element_text( size=text_size),
+    # legend.text=element_text(size=text_size),
+    legend.position = "bottom",
+    strip.text.x = element_text(size = text_size),
+    plot.title = element_text(hjust = 0.5, size = 6)) +
+
+  labs(
+    title = "Restricted Campaigns"
+  )  
+  
+# pnc_sample_maps
+pnc_sample_maps <- addSmallLegend(pnc_sample_maps)
+
+ggarrange(pnc_full_map, pnc_sample_maps, 
+          widths = c(0.25,1)#, align = "v"
+          #lengths = c(1,4), 
+          ) %>%
+  annotate_figure(top = text_grob("Mobile Monitoring Design", size = 5))
+
+ggsave(file.path(image_path, "toc_graphic.png"), width = fig_w, height = fig_h)
+
+```
+
+
+
+
+
+ 
