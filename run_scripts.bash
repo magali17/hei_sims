@@ -7,13 +7,10 @@ rscript 2.0_uk_workspace.R
 rscript 2_uk_cv.R
 rscript 2_uk_test.R
 rscript 2_uk_grid.R
-#rscript 2_uk_distance.R
-#rscript 2_uk_buffered_loo.R
-#rscript 2_uk_cluster.R
 rscript 2_uk_combine_predictions.R
 rscript 3_model_eval.R
 
 ## knit markdown with results 
-#Rscript -e 'rmarkdown::render("4_results_summary.Rmd", "html_document")'
+Rscript -e 'rmarkdown::render("4_results_summary.Rmd", "html_document")'
 
 echo "done running scripts"
