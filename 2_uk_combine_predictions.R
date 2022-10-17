@@ -26,7 +26,7 @@ annual_test_set <- readRDS(file.path("Output", "annual_test_set2.rda"))
 #predictions
 test_set_predictions <- readRDS(file.path("Output", "UK Predictions", "test_set_predictions.rda"))
 cv_predictions <- readRDS(file.path("Output", "UK Predictions", "cv_predictions.rda"))
-cluster_predictions <- readRDS(file.path("Output", "UK Predictions", "cluster_predictions.rda"))
+#cluster_predictions <- readRDS(file.path("Output", "UK Predictions", "cluster_predictions.rda"))
 
 if (run_buffered_loo == TRUE) {
   buff_loo_predictions <- readRDS(file.path("Output", "UK Predictions", "buffered_loo_predictions.rda"))
@@ -61,9 +61,9 @@ campaign_estimates <- annual %>% st_drop_geometry() %>%
 
 
 # combine predictions & estimates
-predictions0 <- rbind(test_set_predictions, cv_predictions) %>%
+predictions0 <- rbind(test_set_predictions, cv_predictions) #%>%
   #spatial clustered CV
-  rbind(cluster_predictions) 
+  #rbind(cluster_predictions) 
 
 if (run_buffered_loo ==TRUE) {predictions0 <- rbind(predictions0, buff_loo_predictions)}
 
@@ -72,7 +72,10 @@ predictions <- predictions0 %>%
   left_join(gs_estimates) %>%
   left_join(campaign_estimates) %>%
   #put back on native scale before evaluating
-  mutate_at(vars(contains("estimate"), prediction), ~exp(.)) 
+  mutate_at(vars(contains("estimate"), prediction,
+                 #TEST
+                 var1.var
+                 ), ~exp(.)) 
 
 
 ##################################################################################################
@@ -85,4 +88,4 @@ saveRDS(predictions, file.path("Output", "UK Predictions", "all_predictions.rda"
 #   saveRDS(predictions, file.path("Output", "UK Predictions", "all_predictions_with_buffered_loo.rda"))
 # }
 
-print("done")
+message("done with 2_uk_combine_predictions.R") 

@@ -1,11 +1,6 @@
 #script purpose: evaluate UK-PLS model performances
 
 ##################################################################################################
-# to run in terminal:
-# 1. change directory:  cd ~/OneDrive\ -\ UW/Documents/Post\ Doc/Study\ Projects/ACT\ TRAP\ MM/ACT\ HEI\ Supp/act_hei_aim1a
-# 2. run script:        Rscript 3_model_eval.R 
-
-##################################################################################################
 # SETUP
 ##################################################################################################
 
@@ -24,9 +19,6 @@ pacman::p_load(tidyverse,
 )    
 
 set.seed(1)
-
-# ## for future.apply::future_replicate()
-# plan(multisession, workers = 6)
 
 ##################################################################################################
 # LOAD DATA
@@ -68,10 +60,6 @@ monitoring_area <- st_area(monitoring_region) %>% set_units("km2") %>% drop_unit
 # CV STATS FUNCTION
 ##################################################################################################
  
-# dt = group_split(predictions, campaign, design, version, variable, out_of_sample, reference)[[3]]
-# prediction = "prediction"
-# reference = "estimate"
-
 # Fn returns RMSE and MSE-based R2 for a given dataset
 validation_stats <- function(dt, prediction, reference){
 
@@ -96,10 +84,12 @@ validation_stats <- function(dt, prediction, reference){
   
 }
 
+saveRDS(validation_stats, file.path("Output", "validation_stats_fn.rda"))
 ##################################################################################################
 # don't do traditional assessment for spatial clustering - distance analysis
-model_perf <- mclapply(group_split(#filter(predictions, !grepl("Spatial", out_of_sample)),
-                                    predictions,
+message("calculating performance statistics")
+
+model_perf <- mclapply(group_split(predictions,
                                    campaign, design, version, variable, out_of_sample, reference), 
                        mc.cores = 5,
                        validation_stats, prediction = "prediction", reference = "estimate") %>%
@@ -113,76 +103,5 @@ select(model_perf , -no_sites) %>%
   saveRDS(., file.path("Output", "model_eval.rda"))
 
 
-print("done with 3_model_eval.R")
-
-##################################################################################################
-# TEST - SPATIAL CLUSTER VALIDATION APPROACH FOR PREDICTION ERROR BY MONITOR-PREDICTION DISTANCE
-##################################################################################################
-# TEST- different dataset for distance validation if want to look at exact prediction distance
-cluster_perf <- predictions %>%
-  filter(grepl("Spatial", out_of_sample)) %>%
-  mutate(
-    absolute_error = abs(prediction-estimate), # ~RMSE for 1 pt only
-    square_error = absolute_error^2, #~MSE
-  )
-
-saveRDS(cluster_perf, file.path("Output", "model_eval_cluster_dist.rda"))
-
-
-v1 <- c("absolute_error", "square_error")
-
-lapply(v1, function(x){
-  # x=v1[2]
-  df <- cluster_perf %>%
-    filter(grepl("Spatial", out_of_sample)) %>%
-    pivot_longer(cols = c("absolute_error", "square_error"), names_to = "model_eval", values_to = "value") %>%  
-    
-    filter(model_eval %in% x) %>%
-    mutate(version = as.numeric(version))  
-    
-      p <- df %>%
-        ggplot(., aes(x=version, y=value, col=variable, group=variable)) +
-        facet_grid(variable~design, scales = "free", switch = "both") +
-        geom_hline(yintercept = 0, linetype=2, alpha=0.5) +
-        #geom_smooth(method = "lm") +
-        geom_smooth() +
-        #geom_point(alpha=0.3) + 
-        labs(title = x,
-             x = "Distance Between Each Prediction Site & the Closest Monitor"
-             )
-      
-      print(p)
-  
-  })  %>%
-  ggpubr::ggarrange(plotlist = ., common.legend = T, legend = "bottom",
-                    ncol = 2 
-                    ) %>%
-  ggpubr::annotate_figure(top = "Out-of-spatial-cluster prediction error by monitor-prediction distance"
-                          )
-  
-  
-############################################################
-# TEST: COMPARE VALIDATION APPROACHES: RANDOM VS SPATIAL
-
-# --> NOTE: need to set scales="free" for RMSE
-
-model_perf %>% 
-  filter(grepl("Spatial|CV", out_of_sample),
-         grepl("full|distance", design),
-         reference == "gs_estimate"
-         ) %>%  
-  mutate(
-    design = ifelse(design == "full", "Random", 
-                    ifelse(grepl("PCA", design), "Spatially Clustered\nby PCA distance", "Spatially Clustered\nby Geographic\nDistance (m)" ))
-    ) %>%  
-  ggplot(aes(x="", y=RMSE, col=design)) +
-  facet_wrap(~variable, scales="free", 
-             nrow = 1) +
-  geom_point() + 
-  labs(col = "Cross-Validation\nApproach",
-       x="")
-
-
-
-
+message("done with 3_model_eval.R")
 

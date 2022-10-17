@@ -35,8 +35,7 @@ knitr::opts_chunk$set(echo = F,
                       fig.height = 8, fig.width = 8
                       )  
 
-pacman::p_load(#kable, 
-               kableExtra, 
+pacman::p_load(kableExtra, 
                broom,  #tidy()
                ggpubr, 
                tidyverse,cowplot,
@@ -48,8 +47,10 @@ pacman::p_load(#kable,
  
 # ggplot settings
 theme_set(theme_bw())
-theme_update(legend.position = "bottom")
-
+theme_update(legend.position = "bottom",
+             # WHY do I have to do this all of a sudden?? plots have a black background otherwise
+             plot.background = element_rect(fill = "white", color = NA)
+             )
 
 set.seed(1)
 
@@ -85,7 +86,10 @@ label_pollutant <- function(dt) {
   
   return(dt)
       
-  }
+}
+
+saveRDS(label_pollutant, file.path("Output", "label_pollutant_fn.rda"))
+
 ```
 
 
@@ -186,10 +190,7 @@ facet_grid_equal <- function(...) {
 
 relabel_fewer_stops <- function(dt) {
   dt %>%  
-  #group_by(variable, design, version, campaign, out_of_sample) %>%
   mutate(
-    #sites = as.character(length(unique(location))),
-    
     # for total stops design, use the design #s (not necessarily the actual simulation #s - there may be minor discrepancies)
     sites = ifelse(grepl("stops", design), str_extract(version, " [0-9]{1,3}"), NA),
     sites = as.numeric(gsub(" ", "", sites)),
@@ -199,7 +200,7 @@ relabel_fewer_stops <- function(dt) {
     # the actual max for this fewer total stops version
     total_stops = ifelse(total_stops == 26*278, 7080, total_stops),
     version = ifelse(grepl("stops", design), as.character(total_stops), version)
-    ) #%>% ungroup()
+    )  
   
 }
 
@@ -207,7 +208,6 @@ relabel_fewer_stops <- function(dt) {
 
 
 # Upload Data 
-
 
 ```{r}
 # mapping variables
@@ -222,8 +222,12 @@ stops <- readRDS(file.path("Output", "stops_used.rda")) %>%
                names_to ="variable", values_to = "value") 
 
 # uk predictions
-predictions0 <- readRDS(file.path("Output", "UK Predictions", "all_predictions.rda" #"predictions.rda"
-                                  )) %>% 
+predictions0 <- readRDS(file.path("Output", "UK Predictions", "all_predictions.rda")) %>% 
+  
+  # --> 
+  # drop 2 seasons SI analysis
+  #filter(design != "two seasons") %>%
+  
   #gather("reference", "estimate", contains("estimate")) %>%
   pivot_longer(contains("estimate"), names_to = "reference", values_to =  "estimate") %>%
   # some campaigns don't have "estimtes" for test set locations
@@ -233,11 +237,17 @@ predictions0 <- readRDS(file.path("Output", "UK Predictions", "all_predictions.r
   relabel_fewer_stops() %>%
   
   select(
-    spatial_temporal, design, version, visits, sites, total_stops, campaign, variable, out_of_sample, location, prediction, reference, estimate 
+    spatial_temporal, design, version, visits, sites, total_stops, campaign, variable, out_of_sample, location, prediction, var1.var, 
+    reference, estimate 
   )
 
 # simulation details
 sims0 <- readRDS(file.path("Output", "annual_training_set.rda")) %>%  
+  
+  # --> 
+  # drop 2 seasons SI analysis
+  #filter(design != "two seasons") %>%
+  
   distinct(location, route, visits, campaign, design, version, spatial_temporal) %>%
   # ONLY RELEVANT FOR THE TOTAL STOPS DESIGN: clarify the number of simulation visits, sites and total stops 
   relabel_fewer_stops()
@@ -248,6 +258,11 @@ sims0 <- readRDS(file.path("Output", "annual_training_set.rda")) %>%
 #   st_transform(m_crs)  
 
 model_eval0 <- readRDS(file.path("Output", "model_eval.rda")) %>%
+  
+  # --> 
+  # drop 2 seasons SI analysis
+  #filter(design != "two seasons") %>%
+  
   
   # ONLY RELEVANT FOR THE TOTAL STOPS DESIGN: clarify the number of simulation visits, sites and total stops don't use relabel_fewer_stops() b/c this df doesn't have visits column
   mutate(
@@ -279,12 +294,13 @@ monitoring_region <- readRDS(file.path("..", "..", "1. Our Campaign", "Our Campa
 
 # grid predictions
 grid_predictions0 <- readRDS(file.path("Output", "UK Predictions", "grid_predictions.rda"))  %>%
-  label_pollutant() %>%
+  label_pollutant() %>% 
   # calculate summary statistics for each location across campaigns
   group_by(location_id, longitude, latitude, spatial_temporal, design, version, variable) %>%
   summarize(
     prediction_median = median(prediction),
-    prediction_iqr = IQR(prediction)
+    prediction_iqr = IQR(prediction),
+    median_var1.var = median(var1.var)
   ) %>%
   # calculate median prediction difference relatie to full campaign prediction
   group_by(variable, location_id) %>%
@@ -309,8 +325,8 @@ grid_predictions0 <- readRDS(file.path("Output", "UK Predictions", "grid_predict
 ```{r}
 # additional tables 
 ## proportion of sites used in each distance buffer
-sites_used_geo_dist <- readRDS(file.path("Output", "SI", "sites_used_geo_dist.rda"))
-sites_used_pca_dist <- readRDS(file.path("Output", "SI", "sites_used_pca_dist.rda"))
+# sites_used_geo_dist <- readRDS(file.path("Output", "SI", "sites_used_geo_dist.rda"))
+# sites_used_pca_dist <- readRDS(file.path("Output", "SI", "sites_used_pca_dist.rda"))
 
 # UK-PLS modeling parameters
 modeling_parameters <- readRDS(file.path("Output", "full_model_parameters.rda"))
@@ -345,12 +361,7 @@ design_levels <- c("full",
                    )
 
 version_levels <- c("all training data",
-                    sort_num_lvs(design_name =  c("fewer total stops", "balanced seasons"#,
-                                                  
-                                                  # this is "all training data" as well
-                                                  #str_subset( unique(model_eval0$design), "distance") 
-                                                  
-                                                  )),
+                    sort_num_lvs(design_name =  c("fewer total stops", "balanced seasons")),
                     "business", "business & rush", "rush",
                     unique(model_eval0$version[model_eval0$design == "fewer days"])
                     ) %>%
@@ -377,8 +388,7 @@ add_lvls <- function(dt, spatial_temporal. = st_levels, design_levels. = design_
 
 
 ```{r}
-model_eval <- #add_lvls(model_eval0) %>%
-  model_eval0 %>%
+model_eval <- model_eval0 %>%
   mutate(
     version = factor(version, levels = version_levels),
     design = factor(design, levels = design_levels),
@@ -414,7 +424,7 @@ sims <- sims0 %>%
 ## NOTE! The "visits", "sites", and "total_stops" columns are correct for cross-validated predictions in that they describes the simulation design used to generate the predictions. For fully ou-of-sample test sites, HOWEVER, these columns are meanigless. For example:   
 # predictions %>% group_by(design, version, out_of_sample) %>% summarize(unique_visits = paste(unique(visits), collapse = ", ")) %>% View()
 
-### --> Note the total # of stops is slighlty lower for the fewer total stops 24+ visits b/c some sites don't have that many visits
+### --> Note the total # of stops is slightly lower for the fewer total stops 24+ visits b/c some sites don't have that many visits
 
 predictions <- add_lvls(predictions0) %>%
   label_pollutant() 
@@ -449,8 +459,6 @@ poster_text_size <- 25
 
 # Stops used
 
-### --> add more?
-
 ```{r}
 # of stops per site
 stops %>%
@@ -467,6 +475,15 @@ stops %>%
   kable(caption = "number of visits per site") %>% 
   kable_styling()
 
+
+```
+
+
+unique drive days
+
+```{r}
+length(unique(stops$date)) #251
+range(stops$date)
 
 ```
 
@@ -560,7 +577,10 @@ monitor_density_crosswalk %>%
 # Map of Stops
 
 
+
 ```{r}
+# note: restart Rstudio if have map issues  
+
 # create background map for grid/mapping
 #bbox <- st_bbox(act_shp)
 
@@ -593,7 +613,7 @@ m1 <- map0 +
           ) + 
   
   #monitoring stops
-  geom_sf(data = st_transform(loc_lat_long, project_crs), aes(col = "Available\nfor Training"), inherit.aes = F, size=2) + 
+  geom_sf(data = st_transform(loc_lat_long, project_crs), aes(col = "Training-Validation Set"), inherit.aes = F, size=2) + 
   
   # test set - black dots
   geom_sf(data = filter(st_transform(loc_lat_long, project_crs), grepl("Test", set)), inherit.aes = F, size=2, aes(col = "Test Set")) +
@@ -612,7 +632,7 @@ m1 <- map0 +
   #add attribution/reference to bottom left
   geom_text(aes(x=-Inf, y=-Inf, hjust=-0.01, vjust=-0.5, label= "Map tiles by Stamen Design, under CC BY 3.0. \nData by OpenStreetMap, under ODbL."), size=3) +
     
-  labs(x = "Longitude", y = "Latitude", col = "Site", fill="") 
+  labs(x = "Longitude", y = "Latitude", col = "Sites", fill="") 
 
 
 #add inset map 
@@ -768,29 +788,29 @@ value ~ location + season + day + hour
 
 ```{r}
 
-
-#x = group_split(stops, variable)[[1]]
-
-anova1 <- mclapply(group_split(stops, variable), mc.cores = 4,  function(x) {
+# x = group_split(stops, variable)[[1]]
+#anova1 <- mclapply(group_split(stops, variable), mc.cores = 4,  function(x) {
+anova1 <- lapply(group_split(stops, variable),   function(x) {
   
-  temp <- anovaVCA(value ~ location + season + day + hour, Data = as.data.frame(x))$aov.tab  %>% 
-    tidy() %>%
-    select(factor = .rownames, percent = X.Total) %>% 
+  temp <- anovaVCA(value ~ location + season + day + hour, Data = as.data.frame(x))$aov.tab  %>%
+    as.data.frame() %>%
+    rownames_to_column(var = "factor") %>%
+    rename(percent='%Total') %>%
     mutate(variable = first(x$variable))
+  
   }) %>%
+  
   bind_rows() %>% 
   filter(factor != "total") %>%
   mutate(
-    #factor = ifelse(grepl("tow2", factor), "day", factor),
     factor = ifelse(factor == "location", "site", factor),
-    factor = factor(factor, levels = c("error", "site", "season", "day", "hour")),
-    kind = ifelse(grepl("site", factor), "spatial",
-                  ifelse(grepl("day|hour|season", factor), "temporal", "residual")
-                  ),
-    kind = factor(kind, levels = c("residual", "temporal", "spatial"))
-  ) %>%
+    factor = str_to_title(factor),
+    factor = factor(factor, levels = c("Site", "Season", "Day", "Hour", "Error")),
+    kind = ifelse(grepl("Site", factor), "Spatial",
+                  ifelse(grepl("Day|Hour|Season", factor), "Temporal", "Residual")),
+    kind = factor(kind, levels = c("Spatial", "Temporal",  "Residual"))
+  ) %>%  
   label_pollutant()
-
 
 ```
 
@@ -799,8 +819,7 @@ anova1 <- mclapply(group_split(stops, variable), mc.cores = 4,  function(x) {
 print("Percent of pollutant variability explained by spatial and temporal factors. ANOVA models are for stop-level concentration values (2-min stop), such that: value ~ location (df=277) + season (df=3) + tow2 (df=1) + hour (df~19). The error term is the residual variability for any given site after adjusting for season, day of the week (weekend vs weekday) and hour of the day.")
 
 anova1 %>%
-  ggplot(aes(x=kind, y=percent, #col=factor, 
-             fill=factor)) + 
+  ggplot(aes(x=kind, y=percent, fill=factor)) + 
   geom_bar(stat = "identity") + 
   facet_grid(~variable, switch = "both") + 
   labs(
@@ -809,7 +828,7 @@ anova1 %>%
     fill = ""
   )
 
-ggsave(file.path(image_path, "SI", paste0("stop_level_anovas.png")), width = 9, height = 5)
+#ggsave(file.path(image_path, "SI", paste0("anovas.png")), width = 9, height = 5)
 
 ```
 
@@ -825,8 +844,6 @@ anova1 %>%
   
 
 ```
-
-
 
 # Annual averages 
 
@@ -1034,8 +1051,10 @@ prediction_diff %>%
     qmax = quantile(prediction_diff, 0.95),
     ) %>%
   mutate(version = ifelse(version == "business & rush", "business \n& rush", as.character(version)),
-         version = factor(str_to_title(version), levels = c(str_to_title(version_levels), "Business \n& Rush" )),
-         design = factor(str_to_title(design), levels = c("Full", "Fewer Total Stops", "Balanced Seasons", "Fewer Days", "Fewer Hours")),) %>% 
+         version = ifelse(version == "all training data", "", version),
+         version = factor(str_to_title(version), levels = c("", str_to_title(version_levels), "Business \n& Rush" )),
+         design = ifelse(design=="full", "All-Data", str_to_title(design)),
+         design = factor(design, levels = c("All-Data", "Fewer Total Stops", "Balanced Seasons", "Fewer Days", "Fewer Hours")),) %>% 
 
   ggplot(aes(x=version, fill=variable)) +
   facet_grid(cols = vars(design), rows = vars(variable), scales = "free", switch = "y") +
@@ -1104,8 +1123,8 @@ t0 <- model_eval %>%
   
   
   group_by(variable) %>%
-  summarize(label = paste0("CV: RMSE = ", RMSE[1], ", ","R2 = ", MSE_based_R2[1] , "\n",
-                          "Test: RMSE = ", RMSE[2], ", ","R2 = ", MSE_based_R2[2]
+  summarize(label = paste0("Test: RMSE = ", RMSE[2], ", ", "R2 = ", MSE_based_R2[2],"\n",  "Cross-Validation: RMSE = ", RMSE[1], ", ","R2 = ", MSE_based_R2[1] #, #"\n",
+                          
                    )
             )
 
@@ -1115,31 +1134,64 @@ predictions %>%
          #only look at full campaign
          grepl("full", design)
          ) %>%
+  mutate(out_of_sample = ifelse(out_of_sample=="CV", "Cross-Validation", "Test")) %>%
   
-    ggplot(., aes(x=estimate, y=prediction, col=out_of_sample)) +
-      facet_wrap_equal(~variable, scales="free") +
-      theme(aspect.ratio=1) +
-      geom_point(alpha=0.4) +
-      geom_smooth(se=F, method = "lm") +
-      
-      #geom_text(data= t0, aes(x=-Inf, y=Inf, label=label), hjust=0, vjust=1.1, size=3, inherit.aes = F) +
-  geom_text(data= t0, aes(x=Inf, y=-Inf, label=label), size=3, inherit.aes = F,
-            hjust=1, vjust=-0.1 ) +
-  
-      geom_abline(slope = 1, intercept = 0, linetype=2, alpha=0.5) +
-      geom_label(inherit.aes = F, aes(x=Inf, y=Inf),  hjust = 1, vjust=1, label="1:1", size=3) +
-      
-      geom_abline(slope = c(1.25, 0.75), intercept = 0, linetype=2, alpha=0.5) +
-
-      # geom_label_npc(inherit.aes = F, aes(npcx=0.75, npcy=Inf, label = "+25%"), size=3) +
-      # geom_label_npc(inherit.aes = F, aes(npcx=Inf, npcy=0.75, label = "-25%"), size=3) +
-  
+  ggplot(., aes(x=estimate, y=prediction, col=out_of_sample)) +
+  facet_wrap_equal(~variable, scales="free") +
+  theme(aspect.ratio=1) +
+  geom_point(alpha=0.4) +
+  geom_smooth(se=F, method = "lm") +
+  geom_text(data= t0, aes(x=Inf, y=-Inf, label=label), size=3, inherit.aes = F, hjust=1, vjust=-0.1 ) +
+  geom_abline(slope = 1, intercept = 0, linetype=2, alpha=0.5) +
+  geom_label(inherit.aes = F, aes(x=Inf, y=Inf),  hjust = 1, vjust=1, label="1:1", size=3) +
+  geom_abline(slope = c(1.25, 0.75), intercept = 0, linetype=2, alpha=0.5) +
   labs(col = "Out-of-Sample") 
 
 
 ggsave(file.path(image_path, "SI", "gs_scatterplot.png"), width = 9, height = 7)
 
 ```
+
+## other sampling designs
+
+scatterplots not used: 
+
+```{r}
+predictions %>%
+  filter(grepl("gs_", reference),
+         grepl("CV", out_of_sample),
+         #some example designs
+         (design == "fewer total stops" & version == "3000") |
+           (design == "balanced seasons" & version %in% c("2")) |
+           (design == "fewer hours" & version %in% c("rush", "business")) |
+           #design == "fewer days" |
+           design == "full"
+         ) %>% #distinct(design, version) 
+  mutate(
+    version = ifelse(version =="2", "2 Seasons",
+                     ifelse(version =="3000", "3,000 Total Stops",
+                            ifelse(version =="rush", "Rush Hours",
+                                   ifelse(version =="business", "Business Hours",
+                                          ifelse(version =="all training data", "All-Data", NA))))),
+    version = factor(version, levels = c("All-Data", "3,000 Total Stops", "2 Seasons", "Business Hours", "Rush Hours"))
+    ) %>% # distinct(version, version2)
+  
+  ggplot(., aes(x=estimate, y=prediction, col=version)) +
+  facet_wrap_equal(~variable, scales="free") +
+  theme(aspect.ratio=1) +
+  # keeping SE=F b/c all-data estimates have fewer data points, which results in an artificially wider SE
+  geom_abline(slope = 1, intercept = 0, linetype=2, alpha=0.5) +
+  geom_point(alpha=0.04, shape=21) +
+  #geom_line(stat="smooth", method= "lm", alpha=0.6) +
+  geom_smooth(se=T, formula = "y~x", method="lm", size=0.6) +
+  #geom_label(inherit.aes = F, aes(x=Inf, y=Inf),  hjust = 1, vjust=1, label="1:1", size=3) +
+  geom_abline(slope = c(1.25, 0.75), intercept = 0, linetype=2, alpha=0.5) +
+  labs(col="") 
+
+ggsave(file.path(image_path, "SI", "gs_scatterplot_example_designs.png"), width = 9, height = 7)
+
+```
+
 
 
 ## different validation approaches
@@ -1230,7 +1282,8 @@ full_campaign <- model_eval %>%
          ) %>%
   distinct(#mean_min_train_to_pred_dist_km, training_monitors_per_100km2, 
            out_of_sample, variable, reference, RMSE, MSE_based_R2 
-           )
+           ) %>%
+  mutate(out_of_sample = ifelse(out_of_sample=="CV", "Cross-Validation", "Test"))
 
 
 eval_cols <- c("RMSE", "MSE_based_R2")
@@ -1276,6 +1329,7 @@ for (i in seq_along(eval_cols[1:2])) {
            !grepl("full|distance", design)
             ) %>% 
     mutate(
+      out_of_sample = ifelse(out_of_sample=="CV", "Cross-Validation", "Test"),
       version = factor(str_to_title(version), levels = c(str_to_title(version_levels), "Business \n& Rush" )),
       design = factor(str_to_title(design), levels = c("Full", "Fewer Total Stops", "Balanced Seasons", "Fewer Days", "Fewer Hours")),
       
@@ -1360,19 +1414,14 @@ for (i in plot_vars) {
            ) %>%
     mutate(sites = as.numeric(as.character(sites)),
            visits = factor(as.character(visits), levels = unique(site_visit_summary$visits)),
-           reference = ifelse(grepl("gs_", reference), "Full Campaign Est", "Simulated Campaign Est"),
+           reference = ifelse(grepl("gs_", reference), "All-Data (Best) Estimate", "Reduced Sampling Estimate"),
            reference = paste("Reference: ", reference)
            ) 
     
     p <- ggplot(data=temp, aes(y=median_value, x=total_stops, col=sites, 
-               shape=visits
-               )) +
+               shape=visits)) +
       facet_grid(cols = vars(variable), rows=vars(reference), switch = "y", scales = "free",) +
       geom_hline(yintercept = hline, alpha=0.5, linetype=2) +
-      #geom_line(stat="smooth", aes(group=reference), se=F, alpha=0.5, size=1, show.legend = F) +
-      
-      #geom_line(stat="smooth", aes(group=sites), se=F, alpha=0.65, size=0.5,) +
-      
       geom_point(alpha=0.9) +
       # make higher site counts darker
       scale_color_continuous(high = "#132B43", low = "#56B1F7") +
@@ -1383,22 +1432,10 @@ for (i in plot_vars) {
     print(p)
   
   # save images. RMSE will go in the SI
-  if(grepl("RMSE", i)) {
-    p_image_path = file.path(image_path, "SI")
-    } else{
-      p_image_path = image_path
-      }
+  if(grepl("RMSE", i)) {p_image_path = file.path(image_path, "SI")
+  } else{p_image_path = image_path}
   
   ggsave(file.path(p_image_path, paste0("total_stops_performance_",i, ".png")), width = 7, height = 8)
-  
-  # #save exmple with just PNC using the gold standared reference
-  # p %+% filter(temp,
-  #               grepl("Full", reference),
-  #               grepl("PNC", variable)
-  #               ) %>%
-  #   print()
-  # 
-  # ggsave(file.path(image_path, "SI", paste0("total_stops_performance_pnc_",i, ".png")), width = 7, height = 8)
   
 }
 
@@ -1460,7 +1497,7 @@ lapply(plot_vars, function (x) {
     filter(grepl(x, model_eval)) %>%
     mutate(sites = as.numeric(as.character(sites)), 
            visits = factor(as.character(visits), levels = unique(site_visit_summary$visits)),
-           reference = ifelse(grepl("gs_", reference), "Full Campaign Est", "Simulated Campaign Est"),
+           reference = ifelse(grepl("gs_", reference), "All-Data (Best) Estimate", "Reduced Sampling Estimate"),
            reference = paste("Reference: ", reference)
            ) %>%
     
@@ -1539,7 +1576,7 @@ p <- normalized_model_eval %>%
          version = factor(version, levels = c(version_levels, "business \n& rush" )),
           version = str_to_title(version),
          design = str_to_title(design),
-         reference = ifelse(grepl("gs_", reference), "Full\nCampaign\nEst", "Simulated\nCampaign\nEst")
+         reference = ifelse(grepl("gs_", reference), "All-Data\n(Best)\nEstimate", "Reduced\nSampling\nEstimate")
          ) %>% 
 
   ggplot(aes(y = normalized_value, x=version, col = variable, fill=variable, #group=variable,
@@ -1547,17 +1584,31 @@ p <- normalized_model_eval %>%
              linetype = reference
              )) + 
   facet_grid(cols = vars(design), rows = vars(model_eval), scales = "free", switch = "y") +
-  geom_smooth(stat = 'summary', fun.data = median_hilow, fun.args = list(conf.int = 0.5), alpha = 0.2) + 
+  # geom_smooth(stat = 'summary', fun.data = median_hilow, fun.args = list(conf.int = 0.5), alpha = 0.2) + 
   
   geom_hline(data=temp, aes(yintercept=normalized_value, col=variable), linetype=3, alpha=1) +
 
   labs(col = "Pollutant", fill = "Pollutant", x= "", y = "", linetype = "Reference")
 
-print(p)
+
+p + geom_smooth(stat = 'summary', fun.data = median_hilow, fun.args = list(conf.int = 0.5), alpha = 0.2)
 
 ggsave(file.path(image_path, paste0("campaign_estimates_model_eval2_.png")), width = 10, height = 6)
 
 ```
+
+no IQR
+
+```{r}
+
+p + geom_smooth(se=F)
+ 
+ggsave(file.path(image_path, paste0("campaign_estimates_model_eval2_NoIQR.png")), width = 10, height = 6)
+
+```
+
+
+
 
 -for poster
 
@@ -1641,15 +1692,11 @@ mutate(
 ```{r}
 # fn returns maps of the grid predictions. Each pollutant has its own legend.
 
-# dt = df0 %>%
-#   filter(grepl("Full", design),
-#          grepl("PNC", variable),
-#          )
-# var = "prediction_median"
-# name="Conc."
+# dt = difference_map_data
+# var_names. = unique(full_map_data$variable)
 # x= "PNC (pt/cm3)"
-
-map_predictions <- function(dt, var = "prediction_median", map_type="", new_text_size="", var_names.=var_names, ...) {
+# map_label = "Prediction" 
+map_predictions <- function(dt, var = "prediction_median", map_type="", new_text_size="", var_names.=var_names, pt_size=1, map_label = "Prediction", ...) {
   
   dt <- rename(dt, value = all_of(var))
   
@@ -1661,6 +1708,7 @@ map_predictions <- function(dt, var = "prediction_median", map_type="", new_text
       geom_sf(aes(col=value), 
               #settings for poster
               alpha=0.6,shape=15,
+              size=pt_size
               # settings for SI
               #alpha=0.8, size=1, 
               ) +
@@ -1671,47 +1719,48 @@ map_predictions <- function(dt, var = "prediction_median", map_type="", new_text
       geom_sf(data = monitoring_region, alpha=0, size=0.1) +
       
       scale_colour_gradient(low = "yellow", high = "red", ...) +
-      #scale_fill_gradient(low = "yellow", high = "red", ...) +
-
+ 
       facet_grid(cols = vars(variable), rows = vars(design), switch = "y")  +
       theme_void() +
       theme(legend.justification=c(0,1), 
-            legend.position = c(1,.9)
-            )
+            # TEST
+            #legend.position = c(1,.9),
+            legend.position = "bottom", 
+            legend.title = element_blank(),
+            legend.text = element_text(size=9)
+            ) +
+      guides(colour = guide_colourbar(title.position="top", barwidth = 5))
     
     #remove labels from 2+ columns
     if(!grepl("PNC", x)) {
       p <- p + theme(strip.background.y = element_blank(), strip.text.y = element_blank())
       }
     
-    if(map_type=="prediction_difference") {
+    if(map_type == "prediction_difference") {
       p <- p + scale_colour_gradient2(low = "#56B1F7", high = "red", ...) +
         theme(strip.background.x = element_blank(), strip.text.x = element_blank(),
-              legend.position = c(1,1)
-              ) 
-        
-      }
+              legend.position = "bottom"
+        )
+    }
+    
+    if(map_type=="prediction_iqr"){
+      p <- p + theme(strip.background.x = element_blank(), strip.text.x = element_blank())
+    }
     
      if(new_text_size !=""){
        p <- p + theme(text = element_text(size=new_text_size))
      }
     
-    print(p)
+    print(p #+ theme(legend.position = "bottom")
+          )
     
     })
   
   prediction_maps %>% 
-    ggarrange(plotlist = ., ncol = length(var_names.)) 
-
+    ggarrange(plotlist = ., ncol = length(var_names.), align = "hv") %>%
+    annotate_figure(., left = ggpubr::text_grob(map_label, face = "bold", rot=90))
 }
 
-
- # df0 %>%
- #  filter(grepl("Full", design),
- #         !grepl("CO2", variable)
- #         ) %>% #View()
- #  map_predictions(., var = "prediction_median", name="Conc", new_text_size=poster_text_size*reduce_size, var_names. = str_subset(var_names, "CO2", negate = T))  
- 
 ```
  
 
@@ -1720,34 +1769,51 @@ map_predictions <- function(dt, var = "prediction_median", map_type="", new_text
 ```{r, fig.show='hide'}
 
 # Full campaign site predictions
-full_map <- df0 %>%
+full_map_data <- df0 %>%
   filter(grepl("Full", design)) %>%
-  mutate(design = "Full Campaign\n7,000 Stops") %>%
-  map_predictions(., var = "prediction_median", name="Prediction")
+  mutate(design = "Temporally-Balanced",
+         prediction_median = ifelse(grepl("PNC", variable), prediction_median/10^3, prediction_median),
+         variable = ifelse(grepl("PNC", variable), "PNC (1k pt/cm3)", as.character(variable)),
+         variable = factor(variable, levels = c("PNC (1k pt/cm3)", "BC (ng/m3)", "NO2 (ppb)", "PM2.5 (ug/m3)", "CO2 (ppm)"))
+         ) 
 
 # Median site prediction difference relative to the full campaign 
-difference_map <- df0 %>%
+difference_map_data <- df0 %>%
   filter(!grepl("Full", design)) %>%
   
   mutate(
-    design = ifelse(design == "3000 Stops", "3,000 Stops",
-                    ifelse(design == "2 Season", "3,000 Stops\nDuring 2 Season",
-                           ifelse(design == "Business Hours", "3,000 Stops\nDuring Business Hrs",
-                                  ifelse(design == "Rush Hours", "3,000 Stops\nDuring Rush Hrs", NA
+    design = ifelse(design == "3000 Stops", "Temporally-Balanced",
+                    ifelse(design == "2 Season", "2 Seasons",
+                           ifelse(design == "Business Hours", "Business Hours",
+                                  ifelse(design == "Rush Hours", "Rush Hours", NA
                            )))),
-    design = relevel(factor(design), ref = "3,000 Stops"),
-  ) %>%
-  
-  map_predictions(., var = "median_prediction_diff", map_type = "prediction_difference", name="Difference")  
+    design = relevel(factor(design), ref = "Temporally-Balanced"),
+    median_prediction_diff = ifelse(grepl("PNC", variable), median_prediction_diff/10^3, median_prediction_diff),
+    variable = ifelse(grepl("PNC", variable), "PNC (1k pt/cm3)", as.character(variable)),
+    variable = factor(variable, levels = c("PNC (1k pt/cm3)", "BC (ng/m3)", "NO2 (ppb)", "PM2.5 (ug/m3)", "CO2 (ppm)"))
+    ) 
 
-```
 
-```{r}
+#  MAPS
+full_map  <- full_map_data %>%
+  map_predictions(., var = "prediction_median", #name="Prediction", 
+                  map_label = "Predictions (7k Stops)",
+                  var_names. = unique(full_map_data$variable))
+# full_map
+
+difference_map <- difference_map_data %>%
+  map_predictions(., var = "median_prediction_diff", map_type = "prediction_difference", #name="Difference", 
+                  map_label = "Prediction Differences (3k Stops)",
+                  var_names. = unique(full_map_data$variable))  
+# difference_map
+
+# combine maps
 print("Comparison of the full campaign exposure surface (top) and the median prediction difference for some example monitoring designs.")
 
-ggarrange(full_map, difference_map, ncol = 1, heights = c(1,4))
+ggarrange(full_map, difference_map, ncol = 1, heights = c(1.2,4))
 
-ggsave(file.path(image_path, paste0("maps_of_prediction_diff.png")),  height = 12, width = 12)
+#ggsave(file.path("~", "Desktop", paste0("maps_of_prediction_diff.png")),  height = 12, width = 7)
+ggsave(file.path(image_path, paste0("maps_of_prediction_diff.png")),  height = 12, width = 7)
 
 ```
 
@@ -1758,43 +1824,100 @@ ggsave(file.path(image_path, paste0("maps_of_prediction_diff.png")),  height = 1
 # map the IQR of the predictions
 print("IQR of site predictions following different sampling designs. Larger values indicate larger degrees of variability for any given location across all simulated campaigns.")
 
-iqr_map <- df0 %>%
+iqr_map_data <- df0 %>%
   # the full design has 1 sim and so IQR=0
   filter(!grepl("Full", design)) %>%
   mutate(
-    design = ifelse(design == "3000 Stops", "3,000 Stops",
-                    ifelse(design == "2 Season", "3,000 Stops\nDuring 2 Season",
-                           ifelse(design == "Business Hours", "3,000 Stops\nDuring Business Hrs",
-                                  ifelse(design == "Rush Hours", "3,000 Stops\nDuring Rush Hrs", NA
+    design = ifelse(design == "3000 Stops", "Temporally-Balanced",
+                    ifelse(design == "2 Season", "2 Seasons",
+                           ifelse(design == "Business Hours", "Business Hours",
+                                  ifelse(design == "Rush Hours", "Rush Hours", NA
                            )))),
-    design = relevel(factor(design), ref = "3,000 Stops"),
-  ) %>%
+    design = relevel(factor(design), ref = "Temporally-Balanced"),
+    prediction_iqr = ifelse(grepl("PNC", variable), prediction_iqr/10^3, prediction_iqr),
+         variable = ifelse(grepl("PNC", variable), "PNC (1k pt/cm3)", as.character(variable)),
+         variable = factor(variable, levels = c("PNC (1k pt/cm3)", "BC (ng/m3)", "NO2 (ppb)", "PM2.5 (ug/m3)", "CO2 (ppm)"))
+  ) 
   
-  map_predictions(., var = "prediction_iqr", name="IQR")
+iqr_map <- iqr_map_data %>% 
+  map_predictions(., var = "prediction_iqr",
+                  map_type = "prediction_iqr",
+                  map_label = "Prediction IQR (3k Stops)",
+                  var_names. = unique(full_map_data$variable)
+                  )
+                  
+ ggarrange(full_map, iqr_map, ncol = 1, heights = c(1.2,4))
 
+ggsave(file.path(image_path, "SI", paste0("maps_of_prediction_iqr.png")),  height = 12, width = 7)
 
 ```
+
+- same as above for prediction variance (var1.var)
+
 
 ```{r}
-ggarrange(full_map, iqr_map, ncol = 1, heights = c(1,4))
+var1.var_map <- iqr_map_data %>%
+  map_predictions(., var = "median_var1.var",
+                  map_type = "prediction_iqr",
+                  map_label = "Prediction Variance (3k Stops)",
+                  var_names. = unique(full_map_data$variable)
+                  )
 
-ggsave(file.path(image_path, "SI", paste0("maps_of_prediction_iqr.png")),  height = 12, width = 12)
+ ggarrange(full_map, var1.var_map, ncol = 1, heights = c(1.2,4))
+
+ggsave(file.path(image_path, "Other", paste0("maps_of_prediction_var1.var.png")),  height = 12, width = 7)
 
 ```
 
--for poster
+median site prediction vs median var1.var value by design-version and variable
 
-```{r, fig.show='hide'}
+```{r}
+predictions %>%
+  filter(out_of_sample == "CV",
+         grepl("gs_", reference),
+         !grepl("fewer total stops", design),
+         
+         #location == "MC0003"
+         ) %>% 
+  group_by(design, variable, version, location) %>%
+  summarize(
+    prediction = median(prediction),
+    var1.var = median(var1.var)
+  ) %>% 
+  #mutate(design = paste(design, ", ", version)) %>%
+
+  ggplot(aes(x=prediction, y=var1.var, 
+             group=version, 
+             col=design, #shape = design
+             )) + 
+  facet_wrap(~variable, scales = "free") + 
+  geom_point(alpha=0.2) + 
+  geom_smooth(se=F) + 
+  scale_colour_manual(values = rainbow(10)) + 
+  labs(
+    x = "median site prediction",
+    y = "median site var1.var",
+    caption = "lines connect design-versions; colors are by design"
+  )
+  
+ggsave(file.path(image_path, "Other", paste0("prediction_vs_var1.var.png")),  height = 8, width = 8)
+
+```
+
+
+
+
+
+
+-for poster (set to eval=F for now)
+
+```{r, fig.show='hide', eval=F}
 reduce_size <- 0.88
 
 full_map_b <- df0 %>%
   filter(grepl("Full", design),
-         !grepl("CO2", variable)
-         ) %>% #View()
-  #test
-  mutate(
-    design = "Full Campaign\n7k stops\nMost Hours"
-  ) %>%
+         !grepl("CO2", variable)) %>%  
+  mutate(design = "Full Campaign\n7k stops\nMost Hours") %>%
   
   map_predictions(., var = "prediction_median", name="Conc", new_text_size=poster_text_size*reduce_size, var_names. = str_subset(var_names, "CO2", negate = T))  
   
@@ -1815,7 +1938,7 @@ difference_map_b <- df0 %>%
 
 ```
 
-```{r}
+```{r, eval=F}
 print("Comparison of the full campaign exposure surface (top) and the median prediction difference for some example monitoring designs.")
 
 ggarrange(full_map_b, difference_map_b, ncol = 1, heights = c(1,4))
@@ -1825,10 +1948,9 @@ ggsave(file.path(hei_image_path, "maps_of_prediction_diff.png"),  height = 20, w
 ```
 
 
-
 ## abstract art 
 
-```{r}
+```{r, eval=F}
 addSmallLegend <- function(myPlot, pointSize = 1, textSize = 5, spaceLegend = 0.1) {
     myPlot +
         guides(shape = guide_legend(override.aes = list(size = pointSize)),
@@ -1839,13 +1961,12 @@ addSmallLegend <- function(myPlot, pointSize = 1, textSize = 5, spaceLegend = 0.
                #   #barwidth = 0.5#, barheight = 10
                # )
                ) +
-        theme(legend.title = element_text(size = textSize), 
+        theme(#legend.title = element_text(size = textSize),
+               legend.title = element_blank(),
               legend.text  = element_text(size = textSize),
               legend.key.size = unit(spaceLegend, "lines")
               )
 }
-
-# addSmallLegend(pnc_full_map)
 
 ```
 
@@ -1860,84 +1981,96 @@ text_size <- 4 #0.5
 pt_size <- 0.8
 alpha_val <- 0.4
 
+barwidth <- 0.15
+barheight <- 2
+legend_text_size <- 5
+
 pnc_full_map <- df0 %>%
   filter(grepl("Full", design),
          grepl("PNC", variable),
          ) %>%
   mutate(
     prediction_median = prediction_median/conc_factor,
-    design = "7,000 Stops\nYear-Around\n7 Dys/Wk\nMost Hours"
+    design = "Time Balanced"
     ) %>%
    ggplot() +
       geom_sf(aes(col=prediction_median), alpha=alpha_val, size=pt_size) +
       # monitoring outline
       geom_sf(data = monitoring_region, alpha=0, size=0.1) +
-      scale_colour_gradient(low = "yellow", high = "red", name="PNC Prediction\n(10k pt/cm3)") +
-      facet_wrap(~design)  +
+      scale_colour_gradient(low = "yellow", high = "red", 
+                            #name="PNC Prediction\n(1k pt/cm3)"
+                            ) +
+  facet_wrap(~design)  +
   theme_void() + 
-  theme(
-    # legend.title = element_text( size=text_size),
-    # legend.text=element_text(size=text_size),
-    legend.position = "bottom",
+  theme(            
+    #legend.title = element_blank(),
+    legend.title = element_text(size=legend_text_size-1),
+    legend.text = element_text(size=legend_text_size),
+    legend.spacing.x = unit(0.5, 'mm'),
+    legend.position = "right",
     strip.text.x = element_text(size = text_size),
-    plot.title = element_text(hjust = 0.5, 
-                              size = 6
-                              )
-    ) + 
-  
-  labs(
-    title = "Full Campaign"
-    )  
+    plot.title = element_text(hjust = 0.5, size = 6, face="bold"),
+    # why do I have to do this all of a sudden???
+    #plot.background = element_rect(fill = "white", color = NA)
+    ) +
+  guides(colour = guide_colourbar(barwidth = barwidth, barheight = barheight)) +
+  labs(title = "Prediction\n(7k Stops)",
+       col = "1k\npt/cm3"
+       )  
 
 # pnc_full_map 
-pnc_full_map <- addSmallLegend(pnc_full_map)
 
 pnc_sample_maps <- df0 %>%
-  filter(!grepl("Full", design),
+  filter(!grepl("Full|Season", design),
          grepl("PNC", variable),
-         ) %>% #st_drop_geometry() %>% distinct(design)
+         ) %>% 
   mutate(
-    design = ifelse(design == "3000 Stops", "3000 Stops",
-                    ifelse(design == "2 Season", "3000 Stops\nDuring\n2 Season\n",
-                           ifelse(design == "Business Hours", "3000 Stops\nDuring\nBusiness Hrs",
-                                  ifelse(design == "Rush Hours", "3000 Stops\nDuring\nRush Hrs", NA
+    design = ifelse(design == "3000 Stops", "Time\nBalanced",
+                    ifelse(design == "2 Season", "During\n2 Seasons\n",
+                           ifelse(design == "Business Hours", "During\nBusiness Hrs",
+                                  ifelse(design == "Rush Hours", "During\nRush Hrs", NA
                            )))),
     
-    design = relevel(factor(design), ref = "3000 Stops"),
-    
-    median_prediction_diff = median_prediction_diff/conc_factor
-  ) %>%
+    design = relevel(factor(design), ref = "Time\nBalanced"),
+    median_prediction_diff = median_prediction_diff/conc_factor) %>%
   ggplot() +
   geom_sf(aes(col=median_prediction_diff), alpha=alpha_val, size=pt_size/2) +
   
   # monitoring outline
   geom_sf(data = monitoring_region, alpha=0, size=0.1) +
   
-  scale_colour_gradient2(low = "#56B1F7", high = "red", name="Difference")+
-      facet_wrap(~design, nrow = 1
-                 )  +
+  scale_colour_gradient2(low = "#56B1F7", high = "red", #name="Difference\n(1k pt/cm3)"
+                         )+
+      facet_wrap(~design, nrow = 1)  +
       theme_void() + 
   theme(
-    # legend.title = element_text( size=text_size),
-    # legend.text=element_text(size=text_size),
-    legend.position = "bottom",
+    #legend.title = element_blank(),
+    legend.title = element_text(size=legend_text_size-1),
+    legend.text = element_text(size=legend_text_size),
+    legend.spacing.x = unit(0.5, 'mm'),
+    legend.position = "right",
+    #legend.position = c(1.03, 0.5),
     strip.text.x = element_text(size = text_size),
-    plot.title = element_text(hjust = 0.5, size = 6)) +
-
-  labs(
-    title = "Restricted Campaigns"
-  )  
+    plot.title = element_text(hjust = 0.5, size = 6, face="bold"),
+    # why do I have to do this all of a sudden???
+    #plot.background = element_rect(fill = "white", color = NA)
+    
+    ) +
+  guides(colour = guide_colourbar(barwidth = barwidth, barheight = barheight)) +
+  labs(title = "Prediction Difference (3k stops)",
+       col = "1k\npt/cm3"
+       )  
   
 # pnc_sample_maps
-pnc_sample_maps <- addSmallLegend(pnc_sample_maps)
 
 ggarrange(pnc_full_map, pnc_sample_maps, 
-          widths = c(0.25,1)#, align = "v"
-          #lengths = c(1,4), 
-          ) %>%
-  annotate_figure(top = text_grob("Mobile Monitoring Design", size = 5))
+          #widths = c(0.28,1) 
+          widths = c(0.39,1)
+           ) %>%
+  annotate_figure(top = text_grob("Mobile Monitoring Design (Ultrafine Particles)", size = 6, face = "bold"))
 
-ggsave(file.path(image_path, "toc_graphic.png"), width = fig_w, height = fig_h)
+ggsave(file.path(image_path, "toc_graphic.png"), width = fig_w, height = fig_h, bg = "white"
+       )
 
 ```
 

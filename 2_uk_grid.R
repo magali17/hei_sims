@@ -129,8 +129,10 @@ grid_predictions0 <- lapply(group_split(annual_fewer, variable, spatial_temporal
 
 # common_vars
 grid_predictions <- grid_predictions0 %>% 
-  select(location_id, longitude, latitude, spatial_temporal, design, version, campaign, variable, prediction) %>%
-  mutate(prediction = exp(prediction))
+  select(location_id, longitude, latitude, spatial_temporal, design, version, campaign, variable, prediction, var1.var) %>%
+  mutate(prediction = exp(prediction),
+         var1.var = exp(var1.var)
+         )
 
 
 
@@ -148,3 +150,6 @@ grid_predictions <- grid_predictions0 %>%
 ##################################################################################################
 
 saveRDS(grid_predictions, file.path("Output", "UK Predictions", "grid_predictions.rda"))
+
+message("done with 2_uk_grid.R")
+

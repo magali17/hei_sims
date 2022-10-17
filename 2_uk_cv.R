@@ -35,9 +35,6 @@ cv_predictions0 <- mclapply(group_split(annual, spatial_temporal, design, versio
 cv_predictions <- cv_predictions0 %>% 
   select(all_of(common_vars)) %>%
   mutate(out_of_sample = "CV") %>%
-  
-  #note, the few sites & visits design has a handful of sites w/o predicitons - b/c the no. of sites is small(25)?
-  ### --> WHY???
   drop_na(prediction)
 
 ##################################################################################################
@@ -46,4 +43,4 @@ cv_predictions <- cv_predictions0 %>%
 
 saveRDS(cv_predictions, file.path("Output", "UK Predictions", "cv_predictions.rda"))
 
-print("done")
+message("done with 2_uk_cv.R")

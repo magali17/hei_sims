@@ -65,7 +65,6 @@ cv_pls_p <- function(dt,
     drop_na() %>%
     # place to save predictions
     mutate(cv_p = NA) %>%
-    # remove grouping??
     as.data.frame()
   
   # place to save cv predictions
@@ -136,10 +135,7 @@ cv_pls_p <- function(dt,
 #######################################################################################################################
 # fn returns design-sampling-type-verson names (data in long format) as separate columns 
 #######################################################################################################################
-
 #str_extract(cv_p_names, "[a-z]+_hr")
-
-#### --> EDIT 
 
 separate_design_type_v <- function(dt, 
                                    var = "Design" #,  designs
@@ -271,6 +267,7 @@ rmse_fn <- function(obs, pred){
 }
 
 #returns mse_fn-based R2
+# for simplicity, use this in future: caret::R2(pred = pred, obs = obs, form='traditional')
 r2_mse_based <- function(obs, pred) {
   mse_fn.est <- mse_fn(obs, pred)
   r2 <- 1- mse_fn.est/mean((obs - mean(obs))^2)

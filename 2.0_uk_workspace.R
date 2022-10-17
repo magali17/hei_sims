@@ -161,12 +161,6 @@ var_names <- unique(annual$variable)
 #   geom_histogram() +
 #   labs(title = "Distribution of site annual average concentrations")
 
-
-
-
-
-
-
 ##################################################################################################
 # CREATE RANDOM VALIDATION FOLDS FOR EACH VARIABLE-DESIGN-VERSION
 ##################################################################################################
@@ -183,6 +177,7 @@ random_fold <- function(df, k.=k) {
 }
 
 ############################################################################################################
+message("generating random folds")
 
 random_fold_df <- lapply(group_split(annual, spatial_temporal, design, version, campaign),
                          function(x) random_fold(x, k.=k)) %>%
@@ -237,7 +232,6 @@ pt_dist <- function(locs1, locs2, summary_stat = "min",
   
 }
 
-
 ##################################################################################################
 # CLUSTERING FN
 ##################################################################################################
@@ -256,8 +250,6 @@ assign_cluster <- function(dt = annual, cluster_covariates, no_centers=k) {
   set.seed(3)
   clusters <- kmeans(select(temp, all_of(cluster_covariates)), centers = no_centers, algorithm = "Lloyd", iter.max = 30)
   
-  ## resulting clusters each have 45-67 sites (range = 22)
-  # clusters$size %>% range() %>% diff()
   temp <- temp %>%
     select(location#-cluster_covariates
     ) %>%
@@ -319,10 +311,9 @@ uk_pls <- function(modeling_data, # data for fitting pls-uk models
   # the default distance in gstat is 1/3 of the maximum distance (use cutoff option to change this)
   v_uk <- variogram(uk_formula, st_transform(modeling_data_scores, lambert_proj) )
   
-  #select the best fitting variogram
-  #m_uk <- fit.variogram(v_uk, vgm(c("Exp", "Sph", "Mat")) )
   
   if(var_choice == "") {
+    #select the best fitting variogram
     m_uk <- fit.variogram(v_uk, vgm(c("Exp", "Sph", "Mat")))
   } else {
     # or select a specific variogram if it's not left blank
@@ -339,7 +330,11 @@ uk_pls <- function(modeling_data, # data for fitting pls-uk models
   
   #save predictions
   predictions <- select(new_data, -all_of(cov_names.)) %>%
-    mutate(prediction = uk_model$var1.pred)
+    mutate(prediction = uk_model$var1.pred,
+           
+           #TEST 
+           var1.var = uk_model$var1.var
+           )
   
   #return(result)
   # return the desired output: either the predictions or the modeling specifications
@@ -368,7 +363,6 @@ do_cv <- function (x, fold_name) {
   df <- data.frame()
   
   for(f in k) {
-    # f=k[4]
     modeling_data0 = filter(x, !!as.symbol(fold_name) != f)
     new_data0 = filter(x, !!as.symbol(fold_name) == f)
     
@@ -387,36 +381,36 @@ do_cv <- function (x, fold_name) {
 # fn returns UK-PLS predictions from buffered leave-one-out validation  
 ## dt is df for a specific pollutant
 
-buffered_loo <- function(dt, buff) {
-  #place to save predictions
-  df <- data.frame()
-  
-  #for each site (row)...
-  for (i in 1:nrow(dt) ) {
-    #i=1 
-    prediction_site <- dt[i,]
-    
-    #only model with keep sites outside the buffer
-    keep_sites <- !st_intersects(st_buffer(prediction_site, buff), dt, sparse = F)[1,]
-    modeling_sites <- dt[keep_sites, ]
-    
-    temp <- uk_pls(modeling_data = modeling_sites, new_data = prediction_site) %>% st_drop_geometry() %>%
-      #add number of sites used in model - don't want too little data used
-      mutate(no_modeling_sites = sum(keep_sites))
-    
-    df <- rbind(df, temp) 
-  }
-  
-  df <- df %>%
-    mutate(
-      spatial_temporal = "spatial",
-      design = "geographic distance (m)",
-      version = buff
-    )
-  
-  return(df)
-  
-}
+# buffered_loo <- function(dt, buff) {
+#   #place to save predictions
+#   df <- data.frame()
+#   
+#   #for each site (row)...
+#   for (i in 1:nrow(dt) ) {
+#     #i=1 
+#     prediction_site <- dt[i,]
+#     
+#     #only model with keep sites outside the buffer
+#     keep_sites <- !st_intersects(st_buffer(prediction_site, buff), dt, sparse = F)[1,]
+#     modeling_sites <- dt[keep_sites, ]
+#     
+#     temp <- uk_pls(modeling_data = modeling_sites, new_data = prediction_site) %>% st_drop_geometry() %>%
+#       #add number of sites used in model - don't want too little data used
+#       mutate(no_modeling_sites = sum(keep_sites))
+#     
+#     df <- rbind(df, temp) 
+#   }
+#   
+#   df <- df %>%
+#     mutate(
+#       spatial_temporal = "spatial",
+#       design = "geographic distance (m)",
+#       version = buff
+#     )
+#   
+#   return(df)
+#   
+# }
   
 
 ##################################################################################################
@@ -425,50 +419,50 @@ buffered_loo <- function(dt, buff) {
 
 
 # fn returns CV predictions at locations with X increment differences in the geocovariate space
-pca_dist <- function(x, buff, distances = pca_3d_distances) {
-  
-  #place to save predictions
-  df <- data.frame()
-  
-  #sites with similar PCA loadings are test site
-  for(i in 1:nrow(x) ) {
-    # i=1
-    # 1 prediction site w/ AP data & covariates
-    pred_site <- x[i,]
-    
-    # sites with PCA distances beyond the buffer
-    training_sites <- distances %>%
-      # sites beyond a pca distance from the prediction site
-      filter(location == pred_site$location, 
-             distance > buff) %>%
-      select(-location) %>%
-      select(location = location2) %>%
-      # join training site observations & covariates
-      left_join(x)
-    
-    temp <- uk_pls(modeling_data = training_sites, new_data = pred_site) %>% st_drop_geometry() %>%
-      #add number of sites used in model - don't want too little data used
-      mutate(no_modeling_sites = nrow(training_sites))
-    
-    df <- rbind(df, temp)
-  }
-  
-  df <- df %>%
-    mutate(
-      spatial_temporal = "spatial",
-      design = "PCA covariate distance",
-      version = buff  
-    )
-  
-  return(df)
-  
-}
+# pca_dist <- function(x, buff, distances = pca_3d_distances) {
+#   
+#   #place to save predictions
+#   df <- data.frame()
+#   
+#   #sites with similar PCA loadings are test site
+#   for(i in 1:nrow(x) ) {
+#     # i=1
+#     # 1 prediction site w/ AP data & covariates
+#     pred_site <- x[i,]
+#     
+#     # sites with PCA distances beyond the buffer
+#     training_sites <- distances %>%
+#       # sites beyond a pca distance from the prediction site
+#       filter(location == pred_site$location, 
+#              distance > buff) %>%
+#       select(-location) %>%
+#       select(location = location2) %>%
+#       # join training site observations & covariates
+#       left_join(x)
+#     
+#     temp <- uk_pls(modeling_data = training_sites, new_data = pred_site) %>% st_drop_geometry() %>%
+#       #add number of sites used in model - don't want too little data used
+#       mutate(no_modeling_sites = nrow(training_sites))
+#     
+#     df <- rbind(df, temp)
+#   }
+#   
+#   df <- df %>%
+#     mutate(
+#       spatial_temporal = "spatial",
+#       design = "PCA covariate distance",
+#       version = buff  
+#     )
+#   
+#   return(df)
+#   
+# }
 
 ##################################################################################################
 # COMMON VARIABLES
 ##################################################################################################
 
-common_vars <- c("location", "route", "visits", "campaign", "design", "version", "spatial_temporal", "variable", "prediction")
+common_vars <- c("location", "route", "visits", "campaign", "design", "version", "spatial_temporal", "variable", "prediction", "var1.var")
 
 
 ##################################################################################################
@@ -477,4 +471,4 @@ common_vars <- c("location", "route", "visits", "campaign", "design", "version",
 
 save.image(file.path("Output", "uk_workspace.rdata"))
 
-print("done")
+message("done with 2.0_uk_workspace.R")

@@ -90,4 +90,4 @@ for(i in seq_along(var_names)) {
 
 saveRDS(model_parameters, file.path("Output", "full_model_parameters.rda"))
 
-print("done")
+message("done with 2_uk_test.R")
